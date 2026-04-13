@@ -1,0 +1,163 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: 'Manrope', 'Segoe UI', sans-serif;
+  color-scheme: light;
+  color: #000000;
+  --text-primary: #000000;
+  --text-secondary: #555555;
+  --app-bg: #f1f1f1;
+  --surface: #ffffff;
+  --surface-strong: #ffffff;
+  --surface-border: #dddddd;
+  --surface-shadow: 0 8px 20px rgba(0, 0, 0, 0.06);
+  --surface-shadow-strong: 0 12px 28px rgba(0, 0, 0, 0.08);
+  --field-bg: #ffffff;
+  --field-text: #000000;
+  --muted-text: #555555;
+  --page-border: #dddddd;
+}
+
+:root.dark {
+  color-scheme: dark;
+  color: #f5f5f5;
+  --text-primary: #f5f5f5;
+  --text-secondary: #c4c4c4;
+  --app-bg: #1f1f1f;
+  --surface: #2b2b2b;
+  --surface-strong: #303030;
+  --surface-border: #444444;
+  --surface-shadow: 0 8px 20px rgba(0, 0, 0, 0.28);
+  --surface-shadow-strong: 0 12px 28px rgba(0, 0, 0, 0.36);
+  --field-bg: #2f2f2f;
+  --field-text: #f5f5f5;
+  --muted-text: #c4c4c4;
+  --page-border: #444444;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--app-bg);
+  color: var(--text-primary);
+  transition: background-color 220ms ease, color 220ms ease;
+}
+
+html.dark body {
+  color: var(--text-primary);
+}
+
+/* ── Core components ── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--surface-border);
+  box-shadow: var(--surface-shadow);
+  @apply rounded-md transition duration-200 ease-out;
+}
+
+.field {
+  background: var(--field-bg);
+  color: var(--field-text);
+  @apply w-full rounded-md border border-slate-200 px-3 py-2.5 text-sm transition duration-200
+         focus:border-teal focus:outline-none focus:ring-2 focus:ring-teal/15;
+}
+
+.btn {
+  @apply inline-flex items-center justify-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition duration-200 active:scale-[0.97];
+}
+
+.btn-primary {
+  @apply btn bg-teal text-white hover:bg-[#038a5c] shadow-sm shadow-teal/15;
+}
+
+.btn-secondary {
+  @apply btn bg-white text-slate-700 border border-slate-300 hover:bg-slate-100;
+}
+
+.form-label {
+  @apply mb-1.5 block text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400;
+}
+
+/* ── Dark mode overrides ── */
+.dark .card {
+  background: var(--surface);
+  border-color: var(--surface-border);
+  box-shadow: var(--surface-shadow);
+}
+
+.dark .field {
+  background: var(--field-bg);
+  color: var(--field-text);
+  border-color: var(--surface-border);
+  @apply placeholder:text-slate-400;
+}
+
+.dark .btn-secondary {
+  @apply bg-[#3a3a3a] text-slate-100 border-slate-600 hover:bg-[#454545];
+}
+
+.dark .text-slate-400 { color: #cbd5e1 !important; }
+.dark .text-slate-500 { color: #d1d5db !important; }
+.dark .text-slate-600 { color: #e5eef8 !important; }
+.dark .text-slate-700 { color: #f5f5f5 !important; }
+.dark .text-slate-800 { color: #ffffff !important; }
+.dark .text-slate-900 { color: #ffffff !important; }
+.dark .text-black { color: #ffffff !important; }
+.dark .text-ink { color: #ffffff !important; }
+
+/* ── Login card entrance ── */
+.login-card {
+  animation: slideUp 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.page-title {
+  letter-spacing: -0.03em;
+}
+
+.muted-text {
+  color: var(--muted-text);
+}
+
+/* ── Modal ── */
+.animate-fade-in {
+  animation: fadeInBg 0.2s ease both;
+}
+.modal-card {
+  animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+/* ── DatePicker / TimePicker dropdown ── */
+.animate-dp-in {
+  animation: dpIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes dpIn {
+  from { opacity: 0; transform: translateY(-8px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+/* ── Stat card entrance ── */
+.stat-card {
+  animation: fadeIn 0.4s ease both;
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeInBg {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* ── Hide scrollbar (TimePicker columns) ── */
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
