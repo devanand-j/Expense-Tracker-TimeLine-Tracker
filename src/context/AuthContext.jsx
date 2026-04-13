@@ -3,6 +3,17 @@ import { supabase } from '../lib/supabaseClient';
 
 const AuthContext = createContext(null);
 
+function getOAuthRedirectTo() {
+  const configured = (import.meta.env.VITE_AUTH_REDIRECT_TO || '').trim();
+  if (configured) return configured;
+
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    return window.location.origin;
+  }
+
+  return 'http://localhost:5173';
+}
+
 function resolveRole(email) {
   const configured = (import.meta.env.VITE_ADMIN_EMAILS || '')
     .split(',')
@@ -94,7 +105,7 @@ export function AuthProvider({ children }) {
         supabase.auth.signInWithOAuth({
           provider: 'google',
           options: {
-            redirectTo: 'http://localhost:5173'
+            redirectTo: getOAuthRedirectTo()
           }
         }),
       signOut: () => supabase.auth.signOut()
