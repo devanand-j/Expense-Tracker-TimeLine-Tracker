@@ -33,13 +33,25 @@ function applyStyle(ws, ref, style) {
 
 function formatDownloadTime(dateValue) {
   const dt = new Date(dateValue);
-  const day = String(dt.getDate()).padStart(2, '0');
-  const month = dt.toLocaleString('en-US', { month: 'long' });
-  const year = dt.getFullYear();
   const hours12 = dt.getHours() % 12 || 12;
   const mins = String(dt.getMinutes()).padStart(2, '0');
   const suffix = dt.getHours() >= 12 ? 'PM' : 'AM';
-  return `${day} - ${month} - ${year} ${String(hours12).padStart(2, '0')}:${mins}${suffix}`;
+  return `${String(hours12).padStart(2, '0')}:${mins} ${suffix}`;
+}
+
+function formatRangeDate(dateValue) {
+  if (!dateValue) return '';
+  return new Date(`${dateValue}T00:00:00`).toLocaleDateString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric'
+  }).replace(/\s/g, '-');
+}
+
+function formatDownloadLabel(download) {
+  const start = formatRangeDate(download.rangeStart);
+  const end = formatRangeDate(download.rangeEnd);
+  return `${start} to ${end} ${formatDownloadTime(download.downloadedAt)}`;
 }
 
 function toInputDate(dateValue) {
@@ -92,6 +104,7 @@ function createTimesheetWorksheet({ weekLabel, employeeName, rows }) {
       '',
       'Date',
       'Day',
+      'Project',
       'OnSite',
       'Remote Support',
       'Total Hours',
@@ -108,6 +121,7 @@ function createTimesheetWorksheet({ weekLabel, employeeName, rows }) {
       '',
       formatDateForCell(row.date),
       row.day,
+      row.projectLabel || '-',
       formatHoursAsLabel(row.onSiteHours),
       formatHoursAsLabel(row.remoteSupportHours),
       formatHoursAsLabel(row.workingHours),
@@ -120,9 +134,9 @@ function createTimesheetWorksheet({ weekLabel, employeeName, rows }) {
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!merges'] = [
-    { s: { r: 1, c: 3 }, e: { r: 1, c: 8 } },
+    { s: { r: 1, c: 3 }, e: { r: 1, c: 9 } },
     { s: { r: 3, c: 2 }, e: { r: 3, c: 3 } },
-    { s: { r: 3, c: 4 }, e: { r: 3, c: 8 } }
+    { s: { r: 3, c: 4 }, e: { r: 3, c: 9 } }
   ];
 
   ws['!rows'] = [
@@ -140,6 +154,7 @@ function createTimesheetWorksheet({ weekLabel, employeeName, rows }) {
     { wch: 2 },
     { wch: 12 },
     { wch: 12 },
+    { wch: 18 },
     { wch: 14 },
     { wch: 16 },
     { wch: 13 },
@@ -196,7 +211,7 @@ function createTimesheetWorksheet({ weekLabel, employeeName, rows }) {
   };
 
   applyStyle(ws, 'D2', titleStyle);
-  for (const cell of ['E2', 'F2', 'G2', 'H2', 'I2']) applyStyle(ws, cell, titleStyle);
+  for (const cell of ['E2', 'F2', 'G2', 'H2', 'I2', 'J2']) applyStyle(ws, cell, titleStyle);
   applyStyle(ws, 'C4', labelStyle);
   applyStyle(ws, 'D4', labelStyle);
   applyStyle(ws, 'E4', valueStyle);
@@ -204,14 +219,15 @@ function createTimesheetWorksheet({ weekLabel, employeeName, rows }) {
   applyStyle(ws, 'G4', valueStyle);
   applyStyle(ws, 'H4', valueStyle);
   applyStyle(ws, 'I4', valueStyle);
+  applyStyle(ws, 'J4', valueStyle);
 
-  ['C6', 'D6', 'E6', 'F6', 'G6', 'H6', 'I6', 'J6', 'K6'].forEach((cell) => applyStyle(ws, cell, headerStyle));
+  ['C6', 'D6', 'E6', 'F6', 'G6', 'H6', 'I6', 'J6', 'K6', 'L6'].forEach((cell) => applyStyle(ws, cell, headerStyle));
 
   rows.forEach((_, index) => {
     const rowNumber = 7 + index;
     applyStyle(ws, `C${rowNumber}`, dateStyle);
     applyStyle(ws, `D${rowNumber}`, dayStyle);
-    ['E', 'F', 'G', 'H', 'I', 'J', 'K'].forEach((col) => applyStyle(ws, `${col}${rowNumber}`, dataStyle));
+    ['E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'].forEach((col) => applyStyle(ws, `${col}${rowNumber}`, dataStyle));
   });
 
   return ws;
@@ -230,6 +246,7 @@ function createConsolidatedTimesheetWorksheet({ users }) {
       'Employee Name',
       'Date',
       'Day',
+      'Project',
       'OnSite',
       'Remote Support',
       'Total Hours',
@@ -248,6 +265,7 @@ function createConsolidatedTimesheetWorksheet({ users }) {
         staff.userName,
         formatDateForCell(row.date),
         row.day,
+        row.projectLabel || '-',
         formatHoursAsLabel(row.onSiteHours),
         formatHoursAsLabel(row.remoteSupportHours),
         formatHoursAsLabel(row.workingHours),
@@ -261,9 +279,9 @@ function createConsolidatedTimesheetWorksheet({ users }) {
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!merges'] = [
-    { s: { r: 1, c: 3 }, e: { r: 1, c: 9 } },
+    { s: { r: 1, c: 3 }, e: { r: 1, c: 10 } },
     { s: { r: 3, c: 2 }, e: { r: 3, c: 4 } },
-    { s: { r: 3, c: 5 }, e: { r: 3, c: 9 } }
+    { s: { r: 3, c: 5 }, e: { r: 3, c: 10 } }
   ];
   ws['!cols'] = [
     { wch: 2 },
@@ -271,6 +289,7 @@ function createConsolidatedTimesheetWorksheet({ users }) {
     { wch: 26 },
     { wch: 12 },
     { wch: 12 },
+    { wch: 18 },
     { wch: 14 },
     { wch: 16 },
     { wch: 13 },
@@ -310,9 +329,9 @@ function createConsolidatedTimesheetWorksheet({ users }) {
     border: makeBorder('thin')
   });
 
-  ['C6', 'D6', 'E6', 'F6', 'G6', 'H6', 'I6', 'J6', 'K6', 'L6', 'M6'].forEach((cell) => applyStyle(ws, cell, headerStyle));
+  ['C6', 'D6', 'E6', 'F6', 'G6', 'H6', 'I6', 'J6', 'K6', 'L6', 'M6', 'N6'].forEach((cell) => applyStyle(ws, cell, headerStyle));
   for (let rowNumber = 7; rowNumber <= aoa.length; rowNumber += 1) {
-    ['C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M'].forEach((col) => applyStyle(ws, `${col}${rowNumber}`, bodyStyle));
+    ['C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N'].forEach((col) => applyStyle(ws, `${col}${rowNumber}`, bodyStyle));
   }
 
   ws['!rows'] = [
@@ -332,7 +351,11 @@ export default function ReportsPage() {
   const { user, profile } = useAuth();
   const [timeline, setTimeline] = useState([]);
   const [expenses, setExpenses] = useState([]);
+  const [profiles, setProfiles] = useState([]);
   const [downloads, setDownloads] = useState([]);
+  const [selectedEmployeeId, setSelectedEmployeeId] = useState('all');
+  const [selectedProject, setSelectedProject] = useState('all');
+  const [allStaffExportFormat, setAllStaffExportFormat] = useState('excel');
   const [rangeStart, setRangeStart] = useState(() => {
     const today = new Date();
     return toInputDate(new Date(today.getFullYear(), today.getMonth(), 1));
@@ -341,22 +364,66 @@ export default function ReportsPage() {
 
   useEffect(() => {
     async function load() {
-      const [timelineRes, expenseRes] = await Promise.all([
-        supabase.from('timeline_entries').select('*').eq('user_id', user.id),
-        supabase.from('expenses').select('*').eq('user_id', user.id)
+      const timelineQuery = profile?.role === 'admin'
+        ? supabase.from('timeline_entries').select('*, profiles(name)')
+        : supabase.from('timeline_entries').select('*, profiles(name)').eq('user_id', user.id);
+
+      const expenseQuery = profile?.role === 'admin'
+        ? supabase.from('expenses').select('*, profiles(name)')
+        : supabase.from('expenses').select('*, profiles(name)').eq('user_id', user.id);
+
+      const profileQuery = profile?.role === 'admin'
+        ? supabase.from('profiles').select('id, name').order('name', { ascending: true })
+        : Promise.resolve({ data: [{ id: user.id, name: 'Me' }], error: null });
+
+      const [timelineRes, expenseRes, profileRes] = await Promise.all([
+        timelineQuery,
+        expenseQuery,
+        profileQuery
       ]);
+
+      if (timelineRes.error) { toast.error(timelineRes.error.message); return; }
+      if (expenseRes.error) { toast.error(expenseRes.error.message); return; }
+      if (profileRes.error) { toast.error(profileRes.error.message); return; }
+
       setTimeline(timelineRes.data || []);
       setExpenses(expenseRes.data || []);
+      setProfiles(profileRes.data || []);
+
+      if (profile?.role !== 'admin') {
+        setSelectedEmployeeId(user.id);
+      }
     }
 
     load();
-  }, [user.id]);
+  }, [user.id, profile?.role]);
+
+  const projectOptions = useMemo(() => {
+    const base = ['HumanArchive', 'CPRT'];
+    const dynamic = [
+      ...timeline.map((entry) => entry.project).filter(Boolean),
+      ...expenses.map((entry) => entry.project).filter(Boolean)
+    ];
+    return ['all', ...new Set([...base, ...dynamic])];
+  }, [timeline, expenses]);
+
+  const filteredTimeline = useMemo(() => timeline.filter((entry) => {
+    if (selectedEmployeeId !== 'all' && entry.user_id !== selectedEmployeeId) return false;
+    if (selectedProject !== 'all' && entry.project !== selectedProject) return false;
+    return true;
+  }), [timeline, selectedEmployeeId, selectedProject]);
+
+  const filteredExpenses = useMemo(() => expenses.filter((entry) => {
+    if (selectedEmployeeId !== 'all' && entry.user_id !== selectedEmployeeId) return false;
+    if (selectedProject !== 'all' && entry.project !== selectedProject) return false;
+    return true;
+  }), [expenses, selectedEmployeeId, selectedProject]);
 
   const monthlyReport = useMemo(() => {
     const now = new Date();
     const month = now.getMonth();
-    const monthlyTimeline = timeline.filter((x) => new Date(x.date).getMonth() === month);
-    const monthlyExpenses = expenses.filter((x) => new Date(x.date).getMonth() === month);
+    const monthlyTimeline = filteredTimeline.filter((x) => new Date(x.date).getMonth() === month);
+    const monthlyExpenses = filteredExpenses.filter((x) => new Date(x.date).getMonth() === month);
 
     const totalHours = monthlyTimeline.reduce(
       (sum, entry) => sum + Number(entry.duration || calculateDurationHours(entry.start_time, entry.end_time)),
@@ -381,12 +448,38 @@ export default function ReportsPage() {
       byCategory,
       byStatus
     };
-  }, [timeline, expenses]);
+  }, [filteredTimeline, filteredExpenses]);
 
   const rangeSummary = useMemo(
-    () => buildRangeSummary(timeline, expenses, rangeStart, rangeEnd),
-    [timeline, expenses, rangeStart, rangeEnd]
+    () => buildRangeSummary(filteredTimeline, filteredExpenses, rangeStart, rangeEnd),
+    [filteredTimeline, filteredExpenses, rangeStart, rangeEnd]
   );
+
+  const projectRows = useMemo(() => {
+    const map = new Map();
+
+    rangeSummary.filteredTimeline.forEach((entry) => {
+      const project = entry.project || 'Unassigned';
+      const current = map.get(project) || { project, hours: 0, expenses: 0 };
+      current.hours += Number(entry.duration || calculateDurationHours(entry.start_time, entry.end_time));
+      map.set(project, current);
+    });
+
+    rangeSummary.filteredExpenses.forEach((entry) => {
+      const project = entry.project || 'Unassigned';
+      const current = map.get(project) || { project, hours: 0, expenses: 0 };
+      current.expenses += Number(entry.amount || 0);
+      map.set(project, current);
+    });
+
+    return Array.from(map.values())
+      .sort((a, b) => a.project.localeCompare(b.project))
+      .map((row) => ({
+        ...row,
+        hours: Number(row.hours.toFixed(2)),
+        expenses: Number(row.expenses.toFixed(2))
+      }));
+  }, [rangeSummary]);
 
   const combinedTotals = useMemo(() => {
     const totalHours = rangeSummary.filteredTimeline.reduce(
@@ -411,12 +504,18 @@ export default function ReportsPage() {
   const exportPdf = async () => {
     try {
       const rangeLabel = `${rangeStart || 'Start'} to ${rangeEnd || 'End'}`;
+      const employeeLabel = selectedEmployeeId === 'all'
+        ? 'All Employees'
+        : (profiles.find((p) => p.id === selectedEmployeeId)?.name || 'Selected Employee');
+      const projectLabel = selectedProject === 'all' ? 'All Projects' : selectedProject;
       const rows = [
         `Date Range: ${rangeLabel}`,
+        `Employee: ${employeeLabel}`,
+        `Project: ${projectLabel}`,
         `Total Working Hours: ${rangeSummary.totalHours}`,
         `Total Expenses: ₹${rangeSummary.totalExpenses}`,
         'Daily Totals:',
-        ...rangeSummary.dailyRows.map((row) => `  ${row.date}: ${row.workingHours}h, ₹${row.expenses}`),
+        ...rangeSummary.dailyRows.map((row) => `  ${row.date} (${row.projectLabel || '-'}): ${row.workingHours}h, ₹${row.expenses}`),
         'Category Totals:',
         ...rangeSummary.categoryRows.map((row) => `  ${row.category}: ₹${row.amount}`),
         `Monthly Hours: ${monthlyReport.totalHours}`,
@@ -431,7 +530,7 @@ export default function ReportsPage() {
         userId: user.id
       });
 
-      setDownloads((x) => [{ type: 'PDF', url, downloadedAt: new Date().toISOString() }, ...x]);
+      setDownloads((x) => [{ format: 'pdf', url, downloadedAt: new Date().toISOString(), rangeStart, rangeEnd }, ...x]);
       toast.success('PDF exported and uploaded');
     } catch (error) {
       toast.error(error.message);
@@ -447,7 +546,7 @@ export default function ReportsPage() {
         userId: user.id
       });
 
-      setDownloads((x) => [{ type: 'Excel', url, downloadedAt: new Date().toISOString() }, ...x]);
+      setDownloads((x) => [{ format: 'excel', url, downloadedAt: new Date().toISOString(), rangeStart, rangeEnd }, ...x]);
       toast.success('Excel exported and uploaded');
     } catch (error) {
       toast.error(error.message);
@@ -467,20 +566,29 @@ export default function ReportsPage() {
 
     try {
       const [timelineRes, profilesRes] = await Promise.all([
-        supabase
-          .from('timeline_entries')
-          .select('user_id, date, start_time, end_time, duration, type, profiles(name)')
-          .gte('date', rangeStart)
-          .lte('date', rangeEnd),
+        (() => {
+          let query = supabase
+            .from('timeline_entries')
+            .select('user_id, date, start_time, end_time, duration, type, project, profiles(name)')
+            .gte('date', rangeStart)
+            .lte('date', rangeEnd);
+          if (selectedEmployeeId !== 'all') query = query.eq('user_id', selectedEmployeeId);
+          if (selectedProject !== 'all') query = query.eq('project', selectedProject);
+          return query;
+        })(),
         supabase.from('profiles').select('id, name').order('name', { ascending: true })
       ]);
 
       if (timelineRes.error) throw timelineRes.error;
       if (profilesRes.error) throw profilesRes.error;
 
+      const selectedProfiles = selectedEmployeeId === 'all'
+        ? (profilesRes.data || [])
+        : (profilesRes.data || []).filter((p) => p.id === selectedEmployeeId);
+
       const report = buildAllStaffTimesheet(
         timelineRes.data || [],
-        profilesRes.data || [],
+        selectedProfiles,
         rangeStart,
         rangeEnd
       );
@@ -502,14 +610,44 @@ export default function ReportsPage() {
         XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
       });
 
+      if (allStaffExportFormat === 'pdf') {
+        const lines = [
+          `Date Range: ${rangeStart} to ${rangeEnd}`,
+          `Project: ${selectedProject === 'all' ? 'All Projects' : selectedProject}`
+        ];
+
+        report.users.forEach((staff) => {
+          lines.push('');
+          lines.push(`Employee: ${staff.userName}`);
+          staff.rows
+            .filter((row) => row.workingHours > 0 || row.onSiteHours > 0 || row.remoteSupportHours > 0)
+            .forEach((row) => {
+              lines.push(
+                `${row.date} (${row.day}) | Project: ${row.projectLabel || '-'} | OnSite: ${row.onSiteHours}h | Remote: ${row.remoteSupportHours}h | Total: ${row.workingHours}h`
+              );
+            });
+        });
+
+        const pdfUrl = await exportReportAsPdfAndUpload({
+          title: 'All Staff Timesheet',
+          rows: lines,
+          fileName: 'all-staff-timesheet',
+          userId: user.id
+        });
+
+        setDownloads((x) => [{ format: 'pdf', url: pdfUrl, downloadedAt: new Date().toISOString(), rangeStart, rangeEnd }, ...x]);
+        toast.success('All staff timesheet PDF exported and uploaded');
+        return;
+      }
+
       const url = await exportWorkbookAsXlsxAndUpload({
         workbook,
         fileName: 'all-staff-timesheet',
         userId: user.id
       });
 
-      setDownloads((x) => [{ type: 'All Staff Timesheet', url, downloadedAt: new Date().toISOString() }, ...x]);
-      toast.success('All staff timesheet exported and uploaded');
+      setDownloads((x) => [{ format: 'excel', url, downloadedAt: new Date().toISOString(), rangeStart, rangeEnd }, ...x]);
+      toast.success('All staff timesheet Excel exported and uploaded');
     } catch (error) {
       toast.error(error.message);
     }
@@ -521,7 +659,7 @@ export default function ReportsPage() {
 
       <div className="card p-4">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <label className="space-y-2 text-sm font-medium">
               <span>From Date</span>
               <input
@@ -539,6 +677,30 @@ export default function ReportsPage() {
                 onChange={(event) => setRangeEnd(event.target.value)}
                 className="w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]"
               />
+            </label>
+            {profile?.role === 'admin' ? (
+              <label className="space-y-2 text-sm font-medium">
+                <span>Employee</span>
+                <select
+                  value={selectedEmployeeId}
+                  onChange={(event) => setSelectedEmployeeId(event.target.value)}
+                  className="w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]"
+                >
+                  <option value="all">All Employees</option>
+                  {profiles.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </label>
+            ) : null}
+            <label className="space-y-2 text-sm font-medium">
+              <span>Project</span>
+              <select
+                value={selectedProject}
+                onChange={(event) => setSelectedProject(event.target.value)}
+                className="w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]"
+              >
+                <option value="all">All Projects</option>
+                {projectOptions.filter((p) => p !== 'all').map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
             </label>
           </div>
 
@@ -570,11 +732,12 @@ export default function ReportsPage() {
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="card overflow-x-auto p-4">
           <h2 className="mb-3 font-semibold">Daily Hours and Expenses</h2>
-          <table className="w-full min-w-[980px] text-sm">
+          <table className="w-full min-w-[1100px] text-sm">
             <thead>
               <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
                 <th className="py-2">Date</th>
                 <th>Day</th>
+                <th>Project</th>
                 <th>OnSite</th>
                 <th>Remote Support</th>
                 <th>Total Hours</th>
@@ -588,6 +751,7 @@ export default function ReportsPage() {
                 <tr key={row.date} className="border-b border-[#f1f1f1] dark:border-[#444]">
                   <td className="py-2">{row.date}</td>
                   <td>{row.day}</td>
+                  <td>{row.projectLabel || '-'}</td>
                   <td>{row.onSiteHours}h</td>
                   <td>{row.remoteSupportHours}h</td>
                   <td>{row.workingHours}h</td>
@@ -598,7 +762,7 @@ export default function ReportsPage() {
               ))}
               {!rangeSummary.dailyRows.length ? (
                 <tr>
-                  <td className="py-3 text-slate-500" colSpan={8}>No records for the selected date range.</td>
+                  <td className="py-3 text-slate-500" colSpan={9}>No records for the selected date range.</td>
                 </tr>
               ) : null}
             </tbody>
@@ -631,6 +795,33 @@ export default function ReportsPage() {
         </div>
       </div>
 
+      <div className="card overflow-x-auto p-4">
+        <h2 className="mb-3 font-semibold">Project-wise Hours and Expenses</h2>
+        <table className="w-full min-w-[420px] text-sm">
+          <thead>
+            <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
+              <th className="py-2">Project</th>
+              <th>Total Hours</th>
+              <th>Total Expenses</th>
+            </tr>
+          </thead>
+          <tbody>
+            {projectRows.map((row) => (
+              <tr key={row.project} className="border-b border-[#f1f1f1] dark:border-[#444]">
+                <td className="py-2">{row.project}</td>
+                <td>{row.hours}h</td>
+                <td>₹{row.expenses}</td>
+              </tr>
+            ))}
+            {!projectRows.length ? (
+              <tr>
+                <td className="py-3 text-slate-500" colSpan={3}>No project data in the selected date range.</td>
+              </tr>
+            ) : null}
+          </tbody>
+        </table>
+      </div>
+
       <div className="flex flex-wrap gap-3">
         <button className="btn-primary" onClick={exportPdf}>
           Export PDF
@@ -639,9 +830,19 @@ export default function ReportsPage() {
           Export Excel
         </button>
         {profile?.role === 'admin' ? (
-          <button className="btn-secondary" onClick={exportAllStaffTimesheet}>
-            Export All Staff Timesheet
-          </button>
+          <>
+            <select
+              value={allStaffExportFormat}
+              onChange={(event) => setAllStaffExportFormat(event.target.value)}
+              className="rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]"
+            >
+              <option value="excel">Excel</option>
+              <option value="pdf">PDF</option>
+            </select>
+            <button className="btn-secondary" onClick={exportAllStaffTimesheet}>
+              Export All Staff Timesheet
+            </button>
+          </>
         ) : null}
       </div>
 
@@ -650,9 +851,9 @@ export default function ReportsPage() {
         <ul className="space-y-2 text-sm">
           {downloads.map((item, idx) => (
             <li key={`${item.url}-${idx}`}>
-              {item.type}: {formatDownloadTime(item.downloadedAt)} {'-'}{' '}
+              {formatDownloadLabel(item)} {'-'}{' '}
               <a href={item.url} target="_blank" rel="noreferrer" className="text-teal underline">
-                Download
+                Download {item.format}
               </a>
             </li>
           ))}

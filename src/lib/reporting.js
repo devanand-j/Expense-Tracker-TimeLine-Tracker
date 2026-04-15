@@ -117,6 +117,7 @@ function collectDailyTimelineRows(entries = [], startDate = '', endDate = '') {
       remoteSupportHours: 0,
       dayShiftHours: 0,
       nightShiftHours: 0,
+      projects: new Set(),
       onSiteTimings: [],
       remoteTimings: []
     };
@@ -124,6 +125,7 @@ function collectDailyTimelineRows(entries = [], startDate = '', endDate = '') {
     current.workingHours += hours;
     current.dayShiftHours += shiftSplit.dayHours;
     current.nightShiftHours += shiftSplit.nightHours;
+    if (entry.project) current.projects.add(entry.project);
 
     const timingLabel = toTimeRangeLabel(entry.start_time, entry.end_time);
     if (isOnsiteType(entry.type)) {
@@ -149,6 +151,9 @@ function collectDailyTimelineRows(entries = [], startDate = '', endDate = '') {
         remoteSupportHours: Number(row.remoteSupportHours.toFixed(2)),
         dayShiftHours: Number(row.dayShiftHours.toFixed(2)),
         nightShiftHours: Number(row.nightShiftHours.toFixed(2)),
+        projectLabel: row.projects.size === 0
+          ? '-'
+          : (row.projects.size === 1 ? Array.from(row.projects)[0] : 'Multiple Projects'),
         onSiteTimings: row.onSiteTimings.length ? row.onSiteTimings.join(' | ') : '-',
         remoteTimings: row.remoteTimings.length ? row.remoteTimings.join(' | ') : '-'
       }))
@@ -208,6 +213,7 @@ export function buildRangeSummary(timeline = [], expenses = [], startDate = '', 
       remoteSupportHours: 0,
       dayShiftHours: 0,
       nightShiftHours: 0,
+      projectLabel: '-',
       onSiteTimings: '-',
       remoteTimings: '-',
       expenses: 0
@@ -229,6 +235,7 @@ export function buildRangeSummary(timeline = [], expenses = [], startDate = '', 
       remoteSupportHours: Number((row.remoteSupportHours || 0).toFixed(2)),
       dayShiftHours: Number((row.dayShiftHours || 0).toFixed(2)),
       nightShiftHours: Number((row.nightShiftHours || 0).toFixed(2)),
+      projectLabel: row.projectLabel || '-',
       onSiteTimings: row.onSiteTimings || '-',
       remoteTimings: row.remoteTimings || '-',
       expenses: Number(row.expenses.toFixed(2))
@@ -247,6 +254,7 @@ export function buildRangeSummary(timeline = [], expenses = [], startDate = '', 
       section: 'Daily Total',
       date: row.date,
       day: row.day,
+      project: row.projectLabel,
       workingHours: row.workingHours,
       onSiteHours: row.onSiteHours,
       remoteSupportHours: row.remoteSupportHours,
@@ -262,6 +270,7 @@ export function buildRangeSummary(timeline = [], expenses = [], startDate = '', 
       section: 'Category Total',
       date: '',
       day: '',
+      project: '',
       workingHours: '',
       onSiteHours: '',
       remoteSupportHours: '',
@@ -322,6 +331,7 @@ export function buildAllStaffTimesheet(entries = [], profiles = [], startDate = 
           remoteSupportHours: 0,
           dayShiftHours: 0,
           nightShiftHours: 0,
+          projectLabel: '-',
           onSiteTimings: '-',
           remoteTimings: '-'
         };

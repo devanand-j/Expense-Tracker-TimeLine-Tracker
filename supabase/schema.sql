@@ -19,6 +19,7 @@ create table if not exists public.timeline_entries (
   start_time time not null,
   end_time time not null,
   shift text not null default 'day' check (shift in ('day', 'night')),
+  project text not null check (length(trim(project)) > 0),
   duration numeric(6,2) not null check (duration >= 0),
   type text not null check (type in ('onsite', 'offsite', 'team_lunch', 'client_visit')),
   description text,
@@ -31,6 +32,7 @@ create table if not exists public.expenses (
   user_id uuid not null references public.profiles(id) on delete cascade,
   date date not null,
   expense_time time not null default localtime,
+  project text not null check (length(trim(project)) > 0),
   category text not null check (category in (
     'Food & Beverages',
     'Miscellaneous',
@@ -45,6 +47,8 @@ create table if not exists public.expenses (
   notes text,
   receipt_url text,
   status text not null default 'pending' check (status in ('pending', 'approved', 'rejected')),
+  approval_comment text,
+  status_history jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now()
 );
 
@@ -214,7 +218,7 @@ using (public.is_admin(auth.uid()));
 -- Storage buckets
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values
-  ('receipts', 'receipts', true, 5242880, array['image/jpeg', 'image/png']),
+  ('receipts', 'receipts', true, 1048576, array['image/jpeg', 'image/png']),
   ('exports', 'exports', true, 10485760, array['application/pdf', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'])
 on conflict (id) do nothing;
 

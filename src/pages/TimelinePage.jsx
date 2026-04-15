@@ -8,6 +8,8 @@ import { supabase } from '../lib/supabaseClient';
 import { calculateDurationHours } from '../lib/time';
 import { validateTimelineTimes } from '../utils/validation';
 
+const PROJECT_OPTIONS = ['HumanArchive', 'CPRT', 'Other'];
+
 const TYPES = [
   { value: 'onsite',       label: 'Onsite',        color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400' },
   { value: 'offsite',      label: 'Offsite',       color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400' },
@@ -23,7 +25,30 @@ const SHIFTS = [
 const TYPE_MAP = Object.fromEntries(TYPES.map((t) => [t.value, t]));
 const SHIFT_MAP = Object.fromEntries(SHIFTS.map((s) => [s.value, s]));
 
-const defaultForm = { id: null, date: '', start_time: '', end_time: '', shift: 'day', type: 'onsite', description: '' };
+const defaultForm = {
+  id: null,
+  date: '',
+  start_time: '',
+  end_time: '',
+  shift: 'day',
+  project_choice: 'HumanArchive',
+  project_other: '',
+  type: 'onsite',
+  description: ''
+};
+
+function toProjectForm(project) {
+  if (!project) return { project_choice: 'HumanArchive', project_other: '' };
+  if (project === 'HumanArchive' || project === 'CPRT') {
+    return { project_choice: project, project_other: '' };
+  }
+  return { project_choice: 'Other', project_other: project };
+}
+
+function resolveProjectValue(form) {
+  if (form.project_choice === 'Other') return String(form.project_other || '').trim();
+  return form.project_choice;
+}
 
 function TypeBadge({ type }) {
   const t = TYPE_MAP[type] || { label: type, color: 'bg-slate-100 text-slate-600' };
@@ -70,6 +95,12 @@ export default function TimelinePage() {
       toast.error('Start and end time are required.');
       return;
     }
+    const projectValue = resolveProjectValue(form);
+    if (!projectValue) {
+      toast.error('Project is required.');
+      return;
+    }
+
     setSaving(true);
     const payload = {
       user_id: form.id ? form.user_id || user.id : user.id,
@@ -77,6 +108,7 @@ export default function TimelinePage() {
       start_time: form.start_time,
       end_time: form.end_time,
       shift: form.shift,
+      project: projectValue,
       type: form.type,
       description: form.description,
       duration: calculateDurationHours(form.start_time, form.end_time)
@@ -101,7 +133,15 @@ export default function TimelinePage() {
   };
 
   const openAdd = () => { setForm(defaultForm); setOpen(true); };
-  const openEdit = (entry) => { setForm({ ...defaultForm, ...entry, shift: entry.shift || 'day' }); setOpen(true); };
+  const openEdit = (entry) => {
+    setForm({
+      ...defaultForm,
+      ...entry,
+      shift: entry.shift || 'day',
+      ...toProjectForm(entry.project)
+    });
+    setOpen(true);
+  };
 
   return (
     <div className="space-y-6">
@@ -140,14 +180,14 @@ export default function TimelinePage() {
           <table className="w-full min-w-[700px] text-sm">
             <thead>
               <tr className="border-b border-slate-100 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/70">
-                {['Date', 'Start', 'End', 'Duration', 'Shift', 'Type', 'Description', ...(profile?.role === 'admin' ? ['User'] : []), 'Actions'].map((h) => (
+                {['Date', 'Start', 'End', 'Duration', 'Shift', 'Project', 'Type', 'Description', ...(profile?.role === 'admin' ? ['User'] : []), 'Actions'].map((h) => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50 dark:divide-slate-700/60">
               {entries.length === 0 && (
-                <tr><td colSpan={9} className="py-12 text-center text-sm text-slate-400 dark:text-slate-500">No entries yet. Add your first entry!</td></tr>
+                <tr><td colSpan={10} className="py-12 text-center text-sm text-slate-400 dark:text-slate-500">No entries yet. Add your first entry!</td></tr>
               )}
               {entries.map((entry) => (
                 <tr key={entry.id} className="group transition hover:bg-slate-50/90 dark:hover:bg-slate-700/35">
@@ -162,6 +202,7 @@ export default function TimelinePage() {
                     </span>
                   </td>
                   <td className="px-4 py-3"><ShiftBadge shift={entry.shift || 'day'} /></td>
+                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{entry.project || '—'}</td>
                   <td className="px-4 py-3"><TypeBadge type={entry.type} /></td>
                   <td className="max-w-[200px] truncate px-4 py-3 text-slate-500 dark:text-slate-400">{entry.description || '—'}</td>
                   {profile?.role === 'admin' && <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{entry.profiles?.name}</td>}
@@ -221,6 +262,32 @@ export default function TimelinePage() {
             <p className="mt-2 text-xs text-slate-400">
               Day shift is from 10:00 AM to 6:00 PM and Night shift is from 6:00 PM to 10:00 AM.
             </p>
+          </div>
+
+          <div>
+            <label className="form-label">Project <span className="text-red-500">*</span></label>
+            <select
+              className="field dark:border-slate-600 dark:bg-slate-700 dark:text-white"
+              value={form.project_choice}
+              onChange={(e) => setForm((x) => ({
+                ...x,
+                project_choice: e.target.value,
+                project_other: e.target.value === 'Other' ? x.project_other : ''
+              }))}
+              required
+            >
+              {PROJECT_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+            </select>
+            {form.project_choice === 'Other' && (
+              <input
+                className="field mt-2 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
+                type="text"
+                required
+                value={form.project_other}
+                onChange={(e) => setForm((x) => ({ ...x, project_other: e.target.value }))}
+                placeholder="Enter project name"
+              />
+            )}
           </div>
 
           {form.start_time && form.end_time && (

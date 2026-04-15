@@ -10,9 +10,9 @@ export function validateReceiptFile(file) {
     return { ok: false, message: 'Only JPG and PNG files are allowed.' };
   }
 
-  const maxBytes = 5 * 1024 * 1024;
+  const maxBytes = 1 * 1024 * 1024;
   if (file.size > maxBytes) {
-    return { ok: false, message: 'File size must be less than 5MB.' };
+    return { ok: false, message: 'File size must be less than 1MB.' };
   }
 
   return { ok: true };

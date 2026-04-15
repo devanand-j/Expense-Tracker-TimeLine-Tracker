@@ -8,6 +8,38 @@ import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabaseClient';
 import { validatePositiveAmount } from '../utils/validation';
 
+const PROJECT_OPTIONS = ['HumanArchive', 'CPRT', 'Other'];
+
+function toProjectForm(project) {
+  if (!project) return { project_choice: 'HumanArchive', project_other: '' };
+  if (project === 'HumanArchive' || project === 'CPRT') {
+    return { project_choice: project, project_other: '' };
+  }
+  return { project_choice: 'Other', project_other: project };
+}
+
+function resolveProjectValue(form) {
+  if (form.project_choice === 'Other') return String(form.project_other || '').trim();
+  return form.project_choice;
+}
+
+function normalizeStatusHistory(value) {
+  if (!Array.isArray(value)) return [];
+  return [...value].sort((a, b) => new Date(b.changed_at) - new Date(a.changed_at));
+}
+
+function formatHistoryDate(value) {
+  if (!value) return '-';
+  const date = new Date(value);
+  const day = String(date.getDate()).padStart(2, '0');
+  const month = date.toLocaleString('en-US', { month: 'short' });
+  const year = date.getFullYear();
+  const hours = date.getHours() % 12 || 12;
+  const mins = String(date.getMinutes()).padStart(2, '0');
+  const suffix = date.getHours() >= 12 ? 'PM' : 'AM';
+  return `${day}-${month}-${year} ${String(hours).padStart(2, '0')}:${mins} ${suffix}`;
+}
+
 const CATEGORIES = [
   'Food & Beverages',
   'Miscellaneous',
@@ -38,6 +70,7 @@ const STATUS_STYLES = {
 
 const defaultForm = {
   id: null, date: '', expense_time: '',
+  project_choice: 'HumanArchive', project_other: '',
   category: 'Food & Beverages', amount: '', notes: '', receipt_url: '', status: 'pending'
 };
 
@@ -45,8 +78,9 @@ export default function ExpensePage() {
   const { user, profile } = useAuth();
   const [items, setItems] = useState([]);
   const [open, setOpen] = useState(false);
+  const [historyItem, setHistoryItem] = useState(null);
   const [form, setForm] = useState(defaultForm);
-  const [filters, setFilters] = useState({ category: '', from: '', to: '' });
+  const [filters, setFilters] = useState({ category: '', project: '', from: '', to: '' });
   const [saving, setSaving] = useState(false);
 
   const isMisc = form.category === 'Miscellaneous';
@@ -63,6 +97,7 @@ export default function ExpensePage() {
 
   const filtered = useMemo(() => items.filter((x) => {
     if (filters.category && x.category !== filters.category) return false;
+    if (filters.project && x.project !== filters.project) return false;
     if (filters.from && x.date < filters.from) return false;
     if (filters.to && x.date > filters.to) return false;
     return true;
@@ -74,11 +109,14 @@ export default function ExpensePage() {
     e.preventDefault();
     if (!validatePositiveAmount(form.amount)) { toast.error('Amount must be greater than 0'); return; }
     if (isMisc && !form.notes?.trim()) { toast.error('Notes are required for Miscellaneous expenses'); return; }
+    const projectValue = resolveProjectValue(form);
+    if (!projectValue) { toast.error('Project is required.'); return; }
 
     setSaving(true);
     const payload = {
       user_id: form.id ? form.user_id || user.id : user.id,
       date: form.date, expense_time: form.expense_time,
+      project: projectValue,
       category: form.category, amount: Number(form.amount),
       notes: form.notes, receipt_url: form.receipt_url,
       status: form.status || 'pending'
@@ -100,12 +138,19 @@ export default function ExpensePage() {
   };
 
   const openAdd = () => { setForm(defaultForm); setOpen(true); };
-  const openEdit = (item) => { setForm(item); setOpen(true); };
+  const openEdit = (item) => {
+    setForm({
+      ...defaultForm,
+      ...item,
+      ...toProjectForm(item.project)
+    });
+    setOpen(true);
+  };
 
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-extrabold text-ink dark:text-white">Expenses</h1>
           <p className="mt-0.5 text-sm text-slate-400">{filtered.length} records · Total: ₹{totalFiltered.toFixed(2)}</p>
@@ -117,7 +162,7 @@ export default function ExpensePage() {
       </div>
 
       {/* Filters */}
-      <div className="card grid gap-3 p-4 dark:border-slate-700 dark:bg-slate-800 md:grid-cols-4">
+      <div className="card grid gap-3 p-4 dark:border-slate-700 dark:bg-slate-800 md:grid-cols-5">
         <select
           className="field dark:border-slate-600 dark:bg-slate-700 dark:text-white"
           value={filters.category}
@@ -126,11 +171,19 @@ export default function ExpensePage() {
           <option value="">All Categories</option>
           {CATEGORIES.map((c) => <option key={c} value={c}>{CAT_ICONS[c]} {c}</option>)}
         </select>
+        <select
+          className="field dark:border-slate-600 dark:bg-slate-700 dark:text-white"
+          value={filters.project}
+          onChange={(e) => setFilters((x) => ({ ...x, project: e.target.value }))}
+        >
+          <option value="">All Projects</option>
+          {[...new Set(items.map((x) => x.project).filter(Boolean))].map((p) => <option key={p} value={p}>{p}</option>)}
+        </select>
         <DatePicker value={filters.from} onChange={(v) => setFilters((x) => ({ ...x, from: v }))} placeholder="From date" />
         <DatePicker value={filters.to} onChange={(v) => setFilters((x) => ({ ...x, to: v }))} placeholder="To date" />
         <button
           className="btn-secondary flex items-center justify-center gap-2 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600"
-          onClick={() => setFilters({ category: '', from: '', to: '' })}
+          onClick={() => setFilters({ category: '', project: '', from: '', to: '' })}
         >
           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
           Clear
@@ -140,17 +193,17 @@ export default function ExpensePage() {
       {/* Table */}
       <div className="card overflow-hidden dark:border-slate-700 dark:bg-slate-800">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[860px] text-sm">
+          <table className="w-full min-w-[980px] text-sm">
             <thead>
               <tr className="border-b border-slate-100 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/70">
-                {['Date', 'Time', 'Category', 'Amount', 'Status', 'Notes', 'Receipt', ...(profile?.role === 'admin' ? ['User'] : []), 'Actions'].map((h) => (
+                {['Date', 'Time', 'Project', 'Category', 'Amount', 'Status', 'Notes', 'Receipt', ...(profile?.role === 'admin' ? ['User'] : []), 'Actions'].map((h) => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50 dark:divide-slate-700/60">
               {filtered.length === 0 && (
-                <tr><td colSpan={9} className="py-12 text-center text-sm text-slate-400 dark:text-slate-500">No expenses found. Add your first expense!</td></tr>
+                <tr><td colSpan={10} className="py-12 text-center text-sm text-slate-400 dark:text-slate-500">No expenses found. Add your first expense!</td></tr>
               )}
               {filtered.map((item) => (
                 <tr key={item.id} className="group transition hover:bg-slate-50/90 dark:hover:bg-slate-700/35">
@@ -158,6 +211,7 @@ export default function ExpensePage() {
                     {new Date(item.date + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
                   </td>
                   <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{item.expense_time?.slice(0,5) || '—'}</td>
+                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{item.project || '—'}</td>
                   <td className="px-4 py-3">
                     <span className="flex items-center gap-1.5">
                       <span>{CAT_ICONS[item.category]}</span>
@@ -169,6 +223,11 @@ export default function ExpensePage() {
                     <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${STATUS_STYLES[item.status] || ''}`}>
                       {item.status}
                     </span>
+                    {item.approval_comment ? (
+                      <p className="mt-1 max-w-[180px] truncate text-[11px] text-slate-500 dark:text-slate-400">
+                        {item.approval_comment}
+                      </p>
+                    ) : null}
                   </td>
                   <td className="max-w-[160px] truncate px-4 py-3 text-slate-500 dark:text-slate-400">{item.notes || '—'}</td>
                   <td className="px-4 py-3">
@@ -182,6 +241,12 @@ export default function ExpensePage() {
                   {profile?.role === 'admin' && <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{item.profiles?.name}</td>}
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1.5 opacity-0 transition group-hover:opacity-100">
+                      <button
+                        onClick={() => setHistoryItem(item)}
+                        className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600 shadow-sm transition hover:border-teal/40 hover:text-teal dark:border-slate-600 dark:bg-slate-700 dark:text-slate-300"
+                      >
+                        History
+                      </button>
                       <button onClick={() => openEdit(item)} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600 shadow-sm transition hover:border-teal/40 hover:text-teal dark:border-slate-600 dark:bg-slate-700 dark:text-slate-300">Edit</button>
                       <button onClick={() => remove(item.id)} className="rounded-lg border border-red-100 bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-500 shadow-sm transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-400">Delete</button>
                     </div>
@@ -196,7 +261,7 @@ export default function ExpensePage() {
       {/* Modal */}
       <Modal title={form.id ? 'Edit Expense' : 'New Expense'} open={open} onClose={() => setOpen(false)}>
         <form className="space-y-4" onSubmit={submit}>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <div>
               <label className="form-label">Date <span className="text-red-500">*</span></label>
               <DatePicker value={form.date} onChange={(v) => setForm((x) => ({ ...x, date: v }))} placeholder="Pick a date" />
@@ -208,8 +273,34 @@ export default function ExpensePage() {
           </div>
 
           <div>
+            <label className="form-label">Project <span className="text-red-500">*</span></label>
+            <select
+              className="field dark:border-slate-600 dark:bg-slate-700 dark:text-white"
+              value={form.project_choice}
+              onChange={(e) => setForm((x) => ({
+                ...x,
+                project_choice: e.target.value,
+                project_other: e.target.value === 'Other' ? x.project_other : ''
+              }))}
+              required
+            >
+              {PROJECT_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+            </select>
+            {form.project_choice === 'Other' && (
+              <input
+                className="field mt-2 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
+                type="text"
+                required
+                value={form.project_other}
+                onChange={(e) => setForm((x) => ({ ...x, project_other: e.target.value }))}
+                placeholder="Enter project name"
+              />
+            )}
+          </div>
+
+          <div>
             <label className="form-label">Category <span className="text-red-500">*</span></label>
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
               {CATEGORIES.map((cat) => (
                 <button
                   key={cat}
@@ -271,6 +362,32 @@ export default function ExpensePage() {
               : (form.id ? 'Update Expense' : 'Add Expense')}
           </button>
         </form>
+      </Modal>
+
+      <Modal title="Expense Status History" open={Boolean(historyItem)} onClose={() => setHistoryItem(null)}>
+        {historyItem ? (
+          <div className="space-y-3">
+            <div className="rounded-lg border border-slate-200 p-3 text-sm dark:border-slate-700">
+              <p><span className="font-semibold">Date:</span> {historyItem.date}</p>
+              <p><span className="font-semibold">Project:</span> {historyItem.project || '-'}</p>
+              <p><span className="font-semibold">Amount:</span> ₹{Number(historyItem.amount || 0).toFixed(2)}</p>
+            </div>
+
+            {normalizeStatusHistory(historyItem.status_history).length ? (
+              <ul className="space-y-2">
+                {normalizeStatusHistory(historyItem.status_history).map((event, index) => (
+                  <li key={`${event.changed_at || index}-${event.status || 'status'}`} className="rounded-lg border border-slate-200 p-3 text-sm dark:border-slate-700">
+                    <p className="font-semibold capitalize">{event.status || '-'}</p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">{formatHistoryDate(event.changed_at)}</p>
+                    {event.comment ? <p className="mt-1 text-slate-600 dark:text-slate-300">{event.comment}</p> : null}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-slate-500 dark:text-slate-400">No status history yet.</p>
+            )}
+          </div>
+        ) : null}
       </Modal>
     </div>
   );

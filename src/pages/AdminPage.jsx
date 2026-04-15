@@ -42,6 +42,23 @@ function slugify(value = '') {
     .replace(/^-+|-+$/g, '');
 }
 
+function normalizeStatusHistory(value) {
+  if (!Array.isArray(value)) return [];
+  return [...value].sort((a, b) => new Date(b.changed_at) - new Date(a.changed_at));
+}
+
+function formatHistoryDate(value) {
+  if (!value) return '-';
+  const dt = new Date(value);
+  const day = String(dt.getDate()).padStart(2, '0');
+  const month = dt.toLocaleString('en-US', { month: 'short' });
+  const year = dt.getFullYear();
+  const hours = dt.getHours() % 12 || 12;
+  const mins = String(dt.getMinutes()).padStart(2, '0');
+  const suffix = dt.getHours() >= 12 ? 'PM' : 'AM';
+  return `${day}-${month}-${year} ${String(hours).padStart(2, '0')}:${mins} ${suffix}`;
+}
+
 export default function AdminPage() {
   const { user } = useAuth();
   const [employees, setEmployees] = useState([]);
@@ -49,6 +66,9 @@ export default function AdminPage() {
   const [timeline, setTimeline] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [expenseStatusFilter, setExpenseStatusFilter] = useState('all');
+  const [statusAction, setStatusAction] = useState(null);
+  const [statusComment, setStatusComment] = useState('');
+  const [historyPreview, setHistoryPreview] = useState(null);
   const [receiptPreview, setReceiptPreview] = useState(null);
   const [loading, setLoading] = useState(true);
   const [rangeStart, setRangeStart] = useState(() => {
@@ -326,12 +346,41 @@ export default function AdminPage() {
     }
   };
 
-  const updateStatus = async (expenseId, status) => {
-    const { error } = await supabase.from('expenses').update({ status }).eq('id', expenseId);
+  const openStatusAction = (entry, status) => {
+    setStatusAction({ entry, status });
+    setStatusComment('');
+  };
+
+  const updateStatus = async () => {
+    if (!statusAction) return;
+    const { entry, status } = statusAction;
+
+    const nextHistory = [
+      ...(Array.isArray(entry.status_history) ? entry.status_history : []),
+      {
+        status,
+        comment: String(statusComment || '').trim(),
+        changed_at: new Date().toISOString(),
+        changed_by: user?.id || null
+      }
+    ];
+
+    const { error } = await supabase
+      .from('expenses')
+      .update({
+        status,
+        approval_comment: String(statusComment || '').trim() || null,
+        status_history: nextHistory
+      })
+      .eq('id', entry.id);
+
     if (error) {
       toast.error(error.message);
       return;
     }
+
+    setStatusAction(null);
+    setStatusComment('');
     toast.success(`Expense ${status}`);
     loadEmployeeData(selectedEmployeeId);
   };
@@ -538,11 +587,35 @@ export default function AdminPage() {
           </div>
         </div>
 
-        <table className="w-full min-w-[1000px] text-sm">
+        <div className="space-y-3 md:hidden">
+          {filteredExpenses.map((entry) => (
+            <div key={entry.id} className="rounded-xl border border-[#dddddd] p-3 text-sm dark:border-[#444]">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="font-semibold">{entry.date} {entry.expense_time?.slice(0, 5) || '—'}</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">{entry.project || '-'} · {entry.category}</p>
+                </div>
+                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{entry.status}</span>
+              </div>
+              <p className="mt-2 font-semibold">₹{Number(entry.amount).toFixed(2)}</p>
+              {entry.approval_comment ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{entry.approval_comment}</p> : null}
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => openStatusAction(entry, 'approved')} disabled={entry.status === 'approved'}>Approve</button>
+                <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => openStatusAction(entry, 'rejected')} disabled={entry.status === 'rejected'}>Reject</button>
+                <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => openStatusAction(entry, 'pending')} disabled={entry.status === 'pending'}>Pending</button>
+                <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => setHistoryPreview(entry)}>History</button>
+              </div>
+            </div>
+          ))}
+          {!filteredExpenses.length ? <p className="text-sm text-slate-500">No expenses for this employee.</p> : null}
+        </div>
+
+        <table className="hidden w-full min-w-[1120px] text-sm md:table">
           <thead>
             <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
               <th className="py-2">Date</th>
               <th>Time</th>
+              <th>Project</th>
               <th>Category</th>
               <th>Amount</th>
               <th>Status</th>
@@ -556,9 +629,13 @@ export default function AdminPage() {
               <tr key={entry.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
                 <td className="py-2">{entry.date}</td>
                 <td>{entry.expense_time?.slice(0, 5) || '—'}</td>
+                <td>{entry.project || '-'}</td>
                 <td>{entry.category}</td>
                 <td>₹{Number(entry.amount).toFixed(2)}</td>
-                <td className="capitalize">{entry.status}</td>
+                <td className="capitalize">
+                  {entry.status}
+                  {entry.approval_comment ? <p className="mt-1 max-w-[180px] truncate text-[11px] text-slate-500 dark:text-slate-400">{entry.approval_comment}</p> : null}
+                </td>
                 <td>{entry.notes || '—'}</td>
                 <td>
                   {entry.receipt_url ? (
@@ -585,7 +662,7 @@ export default function AdminPage() {
                     <button
                       type="button"
                       className="btn-primary px-3 py-1 text-xs"
-                      onClick={() => updateStatus(entry.id, 'approved')}
+                      onClick={() => openStatusAction(entry, 'approved')}
                       disabled={entry.status === 'approved'}
                     >
                       Approve
@@ -593,7 +670,7 @@ export default function AdminPage() {
                     <button
                       type="button"
                       className="btn-secondary px-3 py-1 text-xs"
-                      onClick={() => updateStatus(entry.id, 'rejected')}
+                      onClick={() => openStatusAction(entry, 'rejected')}
                       disabled={entry.status === 'rejected'}
                     >
                       Reject
@@ -601,10 +678,17 @@ export default function AdminPage() {
                     <button
                       type="button"
                       className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]"
-                      onClick={() => updateStatus(entry.id, 'pending')}
+                      onClick={() => openStatusAction(entry, 'pending')}
                       disabled={entry.status === 'pending'}
                     >
                       Pending
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]"
+                      onClick={() => setHistoryPreview(entry)}
+                    >
+                      History
                     </button>
                   </div>
                 </td>
@@ -612,7 +696,7 @@ export default function AdminPage() {
             ))}
             {!filteredExpenses.length ? (
               <tr>
-                <td className="py-3 text-slate-500" colSpan={8}>No expenses for this employee.</td>
+                <td className="py-3 text-slate-500" colSpan={9}>No expenses for this employee.</td>
               </tr>
             ) : null}
           </tbody>
@@ -685,6 +769,70 @@ export default function AdminPage() {
           </div>
         </div>
       </div>
+
+      <Modal
+        title={statusAction ? `Update Expense to ${statusAction.status}` : 'Update Expense Status'}
+        open={Boolean(statusAction)}
+        onClose={() => { setStatusAction(null); setStatusComment(''); }}
+      >
+        {statusAction ? (
+          <div className="space-y-4">
+            <div className="rounded-lg border border-[#dddddd] p-3 text-sm dark:border-[#444]">
+              <p><span className="font-semibold">Date:</span> {statusAction.entry.date}</p>
+              <p><span className="font-semibold">Project:</span> {statusAction.entry.project || '-'}</p>
+              <p><span className="font-semibold">Amount:</span> ₹{Number(statusAction.entry.amount || 0).toFixed(2)}</p>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                Comment (optional)
+              </label>
+              <textarea
+                rows={3}
+                value={statusComment}
+                onChange={(event) => setStatusComment(event.target.value)}
+                placeholder="Add reason or context for this status update"
+                className="mt-2 w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <button type="button" className="btn-secondary" onClick={() => { setStatusAction(null); setStatusComment(''); }}>Cancel</button>
+              <button type="button" className="btn-primary" onClick={updateStatus}>Save</button>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal
+        title={historyPreview ? `Status History - ${historyPreview.category}` : 'Status History'}
+        open={Boolean(historyPreview)}
+        onClose={() => setHistoryPreview(null)}
+      >
+        {historyPreview ? (
+          <div className="space-y-3">
+            <div className="rounded-lg border border-[#dddddd] p-3 text-sm dark:border-[#444]">
+              <p><span className="font-semibold">Date:</span> {historyPreview.date}</p>
+              <p><span className="font-semibold">Project:</span> {historyPreview.project || '-'}</p>
+              <p><span className="font-semibold">Amount:</span> ₹{Number(historyPreview.amount || 0).toFixed(2)}</p>
+            </div>
+
+            {normalizeStatusHistory(historyPreview.status_history).length ? (
+              <ul className="space-y-2">
+                {normalizeStatusHistory(historyPreview.status_history).map((event, index) => (
+                  <li key={`${event.changed_at || index}-${event.status || 'status'}`} className="rounded-lg border border-[#dddddd] p-3 text-sm dark:border-[#444]">
+                    <p className="font-semibold capitalize">{event.status || '-'}</p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">{formatHistoryDate(event.changed_at)}</p>
+                    {event.comment ? <p className="mt-1 text-slate-600 dark:text-slate-300">{event.comment}</p> : null}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-slate-500 dark:text-slate-400">No status history yet.</p>
+            )}
+          </div>
+        ) : null}
+      </Modal>
 
       <Modal
         title={receiptPreview?.title || 'Receipt Preview'}
