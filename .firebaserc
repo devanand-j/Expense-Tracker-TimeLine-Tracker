@@ -2,6 +2,14 @@
   "projects": {
     "default": "expensetracker-timelinetracker"
   },
-  "targets": {},
+  "targets": {
+    "expensetracker-timelinetracker": {
+      "hosting": {
+        "web": [
+          "expensetracker-timelinetracker"
+        ]
+      }
+    }
+  },
   "etags": {}
 }
