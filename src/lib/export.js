@@ -1,11 +1,22 @@
 import { jsPDF } from 'jspdf';
-import * as XLSX from 'xlsx';
+import * as XLSX from 'xlsx-js-style';
 import { supabase } from './supabaseClient';
 
 function normalizePdfText(value) {
   if (value == null) return '';
   // jsPDF built-in fonts do not reliably render the Rupee symbol.
   return String(value).replace(/₹/g, 'INR ');
+}
+
+async function uploadExportBlob({ blob, fileName, userId, contentType }) {
+  const path = `${userId}/${Date.now()}-${fileName}`;
+  const { error } = await supabase.storage
+    .from('exports')
+    .upload(path, blob, { contentType, upsert: false });
+  if (error) throw error;
+
+  const { data } = supabase.storage.from('exports').getPublicUrl(path);
+  return data.publicUrl;
 }
 
 export async function exportReportAsPdfAndUpload({
@@ -46,14 +57,12 @@ export async function exportReportAsPdfAndUpload({
   });
 
   const pdfBlob = doc.output('blob');
-  const path = `${userId}/${Date.now()}-${fileName}.pdf`;
-  const { error } = await supabase.storage
-    .from('exports')
-    .upload(path, pdfBlob, { contentType: 'application/pdf', upsert: false });
-  if (error) throw error;
-
-  const { data } = supabase.storage.from('exports').getPublicUrl(path);
-  return data.publicUrl;
+  return uploadExportBlob({
+    blob: pdfBlob,
+    fileName: `${fileName}.pdf`,
+    userId,
+    contentType: 'application/pdf'
+  });
 }
 
 export async function exportReportAsXlsxAndUpload({
@@ -66,19 +75,24 @@ export async function exportReportAsXlsxAndUpload({
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
 
+  return exportWorkbookAsXlsxAndUpload({
+    workbook,
+    fileName,
+    userId
+  });
+}
+
+export async function exportWorkbookAsXlsxAndUpload({ workbook, fileName, userId }) {
   const xlsxArray = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
   const blob = new Blob([xlsxArray], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
   });
 
-  const path = `${userId}/${Date.now()}-${fileName}.xlsx`;
-  const { error } = await supabase.storage.from('exports').upload(path, blob, {
+  return uploadExportBlob({
+    blob,
+    fileName: `${fileName}.xlsx`,
+    userId,
     contentType:
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-    upsert: false
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
   });
-
-  if (error) throw error;
-  const { data } = supabase.storage.from('exports').getPublicUrl(path);
-  return data.publicUrl;
 }

@@ -30,7 +30,16 @@ create table if not exists public.expenses (
   user_id uuid not null references public.profiles(id) on delete cascade,
   date date not null,
   expense_time time not null default localtime,
-  category text not null check (category in ('Food & Beverages', 'Miscellaneous', 'Groceries', 'Cab', 'Bus', 'Train')),
+  category text not null check (category in (
+    'Food & Beverages',
+    'Miscellaneous',
+    'Groceries',
+    'Cab',
+    'Bus',
+    'Train',
+    'Tools or hardware',
+    'Porter Delivery for Hardware'
+  )),
   amount numeric(12,2) not null check (amount > 0),
   notes text,
   receipt_url text,

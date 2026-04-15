@@ -8,7 +8,16 @@ import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabaseClient';
 import { validatePositiveAmount } from '../utils/validation';
 
-const CATEGORIES = ['Food & Beverages', 'Miscellaneous', 'Groceries', 'Cab', 'Bus', 'Train'];
+const CATEGORIES = [
+  'Food & Beverages',
+  'Miscellaneous',
+  'Groceries',
+  'Cab',
+  'Bus',
+  'Train',
+  'Tools or hardware',
+  'Porter Delivery for Hardware'
+];
 
 const CAT_ICONS = {
   'Food & Beverages': '🍽️',
@@ -17,6 +26,8 @@ const CAT_ICONS = {
   'Cab': '🚕',
   'Bus': '🚌',
   'Train': '🚆',
+  'Tools or hardware': '🧰',
+  'Porter Delivery for Hardware': '📦',
 };
 
 const STATUS_STYLES = {

@@ -27,10 +27,12 @@ Production-ready full-stack app with:
 - Auto duration calculation
 - Cross-day logic: if end < start, treated as next day
 - Daily total hours + onsite/offsite breakdown
+- Day shift and night shift split in reports
 - Editable table view
 
 ### Expense
 - Add/edit/delete expenses
+- Categories include: Food & Beverages, Miscellaneous, Groceries, Cab, Bus, Train, Tools or hardware, Porter Delivery for Hardware
 - Receipt upload (JPG/PNG, max 5MB)
 - Receipt preview
 - Pending/approved/rejected status
@@ -39,6 +41,7 @@ Production-ready full-stack app with:
 ### Reports
 - Employee monthly report summary
 - Export to PDF and XLSX
+- Admin export for all-staff day-wise timesheet (Excel template)
 - Upload generated files to Supabase Storage bucket `exports`
 - Download generated exports from UI
 
