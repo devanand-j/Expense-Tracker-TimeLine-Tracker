@@ -15,13 +15,24 @@ const TYPES = [
   { value: 'client_visit', label: 'Client Visit',  color: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-400' },
 ];
 
-const TYPE_MAP = Object.fromEntries(TYPES.map((t) => [t.value, t]));
+const SHIFTS = [
+  { value: 'day', label: 'Day Shift', note: '10:00 AM to 6:00 PM', color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400' },
+  { value: 'night', label: 'Night Shift', note: '6:00 PM to 10:00 AM', color: 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200' },
+];
 
-const defaultForm = { id: null, date: '', start_time: '', end_time: '', type: 'onsite', description: '' };
+const TYPE_MAP = Object.fromEntries(TYPES.map((t) => [t.value, t]));
+const SHIFT_MAP = Object.fromEntries(SHIFTS.map((s) => [s.value, s]));
+
+const defaultForm = { id: null, date: '', start_time: '', end_time: '', shift: 'day', type: 'onsite', description: '' };
 
 function TypeBadge({ type }) {
   const t = TYPE_MAP[type] || { label: type, color: 'bg-slate-100 text-slate-600' };
   return <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${t.color}`}>{t.label}</span>;
+}
+
+function ShiftBadge({ shift }) {
+  const s = SHIFT_MAP[shift] || { label: shift, color: 'bg-slate-100 text-slate-600' };
+  return <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold ${s.color}`}>{s.label}</span>;
 }
 
 export default function TimelinePage() {
@@ -65,6 +76,7 @@ export default function TimelinePage() {
       date: form.date,
       start_time: form.start_time,
       end_time: form.end_time,
+      shift: form.shift,
       type: form.type,
       description: form.description,
       duration: calculateDurationHours(form.start_time, form.end_time)
@@ -89,7 +101,7 @@ export default function TimelinePage() {
   };
 
   const openAdd = () => { setForm(defaultForm); setOpen(true); };
-  const openEdit = (entry) => { setForm(entry); setOpen(true); };
+  const openEdit = (entry) => { setForm({ ...defaultForm, ...entry, shift: entry.shift || 'day' }); setOpen(true); };
 
   return (
     <div className="space-y-6">
@@ -128,14 +140,14 @@ export default function TimelinePage() {
           <table className="w-full min-w-[700px] text-sm">
             <thead>
               <tr className="border-b border-slate-100 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/70">
-                {['Date', 'Start', 'End', 'Duration', 'Type', 'Description', ...(profile?.role === 'admin' ? ['User'] : []), 'Actions'].map((h) => (
+                {['Date', 'Start', 'End', 'Duration', 'Shift', 'Type', 'Description', ...(profile?.role === 'admin' ? ['User'] : []), 'Actions'].map((h) => (
                   <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50 dark:divide-slate-700/60">
               {entries.length === 0 && (
-                <tr><td colSpan={8} className="py-12 text-center text-sm text-slate-400 dark:text-slate-500">No entries yet. Add your first entry!</td></tr>
+                <tr><td colSpan={9} className="py-12 text-center text-sm text-slate-400 dark:text-slate-500">No entries yet. Add your first entry!</td></tr>
               )}
               {entries.map((entry) => (
                 <tr key={entry.id} className="group transition hover:bg-slate-50/90 dark:hover:bg-slate-700/35">
@@ -149,6 +161,7 @@ export default function TimelinePage() {
                       {Number(entry.duration).toFixed(2)}h
                     </span>
                   </td>
+                  <td className="px-4 py-3"><ShiftBadge shift={entry.shift || 'day'} /></td>
                   <td className="px-4 py-3"><TypeBadge type={entry.type} /></td>
                   <td className="max-w-[200px] truncate px-4 py-3 text-slate-500 dark:text-slate-400">{entry.description || '—'}</td>
                   {profile?.role === 'admin' && <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{entry.profiles?.name}</td>}
@@ -182,6 +195,32 @@ export default function TimelinePage() {
               <label className="form-label">End Time <span className="text-red-500">*</span></label>
               <TimePicker value={form.end_time} onChange={(v) => setForm((x) => ({ ...x, end_time: v }))} placeholder="End" />
             </div>
+          </div>
+
+          <div>
+            <label className="form-label">Shift <span className="text-red-500">*</span></label>
+            <div className="grid grid-cols-2 gap-2">
+              {SHIFTS.map((shift) => (
+                <button
+                  key={shift.value}
+                  type="button"
+                  onClick={() => setForm((x) => ({ ...x, shift: shift.value }))}
+                  className={`rounded-xl border px-3 py-2.5 text-sm font-semibold transition text-left
+                    ${form.shift === shift.value
+                      ? 'border-teal bg-teal text-white shadow shadow-teal/30'
+                      : 'border-slate-200 bg-white text-slate-600 hover:border-teal/40 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                    }`}
+                >
+                  <div>{shift.label}</div>
+                  <div className={`mt-0.5 text-xs ${form.shift === shift.value ? 'text-white/90' : 'text-slate-400 dark:text-slate-400'}`}>
+                    {shift.note}
+                  </div>
+                </button>
+              ))}
+            </div>
+            <p className="mt-2 text-xs text-slate-400">
+              Day shift is from 10:00 AM to 6:00 PM and Night shift is from 6:00 PM to 10:00 AM.
+            </p>
           </div>
 
           {form.start_time && form.end_time && (

@@ -18,6 +18,7 @@ create table if not exists public.timeline_entries (
   date date not null,
   start_time time not null,
   end_time time not null,
+  shift text not null default 'day' check (shift in ('day', 'night')),
   duration numeric(6,2) not null check (duration >= 0),
   type text not null check (type in ('onsite', 'offsite', 'team_lunch', 'client_visit')),
   description text,
