@@ -6,6 +6,7 @@ import AdminPage from './pages/AdminPage';
 import DashboardPage from './pages/DashboardPage';
 import ExpensePage from './pages/ExpensePage';
 import LoginPage from './pages/LoginPage';
+import OnboardingPage from './pages/OnboardingPage';
 import ReportsPage from './pages/ReportsPage';
 import TimelinePage from './pages/TimelinePage';
 
@@ -68,6 +69,17 @@ export default function App() {
           <ProtectedRoute>
             <AppShell>
               <ExpensePage />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/onboarding"
+        element={
+          <ProtectedRoute>
+            <AppShell>
+              <OnboardingPage />
             </AppShell>
           </ProtectedRoute>
         }

@@ -33,10 +33,17 @@ Production-ready full-stack app with:
 ### Expense
 - Add/edit/delete expenses
 - Categories include: Food & Beverages, Miscellaneous, Groceries, Cab, Bus, Train, Tools or hardware, Porter Delivery for Hardware
-- Receipt upload (JPG/PNG, max 5MB)
+- Receipt upload (JPG/PNG, max 1MB)
 - Receipt preview
 - Pending/approved/rejected status
 - Category and date filters
+
+### Employee Onboarding
+- Dedicated onboarding page with 16 sections
+- Employee editable data is stored separately from HR-managed fields
+- Repeatable sections for previous employment, qualifications, and projects
+- Document uploads via Supabase Storage (`employee-documents` bucket)
+- Max upload size enforced at 1MB per file (PDF/JPG/PNG)
 
 ### Reports
 - Employee monthly report summary

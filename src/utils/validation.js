@@ -21,3 +21,21 @@ export function validateReceiptFile(file) {
 export function validateTimelineTimes(start, end) {
   return Boolean(start && end);
 }
+
+export function validateOnboardingDocumentFile(file) {
+  if (!file) {
+    return { ok: false, message: 'Please choose a file to upload.' };
+  }
+
+  const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png'];
+  if (!allowedTypes.includes(file.type)) {
+    return { ok: false, message: 'Only PDF, JPG, and PNG files are allowed.' };
+  }
+
+  const maxBytes = 1 * 1024 * 1024;
+  if (file.size > maxBytes) {
+    return { ok: false, message: 'File size must be less than 1MB.' };
+  }
+
+  return { ok: true };
+}

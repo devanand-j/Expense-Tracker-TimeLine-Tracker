@@ -52,10 +52,75 @@ create table if not exists public.expenses (
   created_at timestamptz not null default now()
 );
 
+-- 4) Employee onboarding
+create table if not exists public.employee_onboarding (
+  user_id uuid primary key references public.profiles(id) on delete cascade,
+  employee_editable_data jsonb not null default '{}'::jsonb,
+  hr_managed_data jsonb not null default '{}'::jsonb,
+  onboarding_status text not null default 'draft' check (onboarding_status in ('draft', 'submitted', 'under_review', 'needs_changes', 'approved', 'rejected')),
+  review_comment text,
+  reviewed_by uuid references public.profiles(id) on delete set null,
+  reviewed_at timestamptz,
+  declaration_confirmed boolean not null default false,
+  signature_consent text not null default '',
+  submitted_at timestamptz,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
 create index if not exists idx_timeline_entries_user_id on public.timeline_entries(user_id);
 create index if not exists idx_timeline_entries_date on public.timeline_entries(date);
 create index if not exists idx_expenses_user_id on public.expenses(user_id);
 create index if not exists idx_expenses_date on public.expenses(date);
+create index if not exists idx_employee_onboarding_updated_at on public.employee_onboarding(updated_at);
+
+create or replace function public.set_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+create or replace function public.prevent_non_admin_onboarding_update()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  if not public.is_admin(auth.uid()) then
+    if old.hr_managed_data is distinct from new.hr_managed_data then
+      raise exception 'Only admin can update HR managed onboarding data';
+    end if;
+
+    if old.review_comment is distinct from new.review_comment
+      or old.reviewed_by is distinct from new.reviewed_by
+      or old.reviewed_at is distinct from new.reviewed_at then
+      raise exception 'Only admin can update onboarding review metadata';
+    end if;
+
+    if old.onboarding_status is distinct from new.onboarding_status
+      and new.onboarding_status not in ('draft', 'submitted') then
+      raise exception 'Only admin can set onboarding status beyond submitted';
+    end if;
+  end if;
+
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_set_employee_onboarding_updated_at on public.employee_onboarding;
+create trigger trg_set_employee_onboarding_updated_at
+before update on public.employee_onboarding
+for each row execute function public.set_updated_at();
+
+drop trigger if exists trg_prevent_non_admin_onboarding_update on public.employee_onboarding;
+create trigger trg_prevent_non_admin_onboarding_update
+before update on public.employee_onboarding
+for each row execute function public.prevent_non_admin_onboarding_update();
 
 -- Role helper
 create or replace function public.is_admin(uid uuid)
@@ -142,87 +207,130 @@ for each row execute function public.prevent_non_admin_status_update();
 alter table public.profiles enable row level security;
 alter table public.timeline_entries enable row level security;
 alter table public.expenses enable row level security;
+alter table public.employee_onboarding enable row level security;
 
 -- Profiles RLS
+drop policy if exists "Profiles: self read or admin read" on public.profiles;
 create policy "Profiles: self read or admin read"
 on public.profiles
 for select
 using (id = auth.uid() or public.is_admin(auth.uid()));
 
+drop policy if exists "Profiles: self update" on public.profiles;
 create policy "Profiles: self update"
 on public.profiles
 for update
 using (id = auth.uid())
 with check (id = auth.uid());
 
+drop policy if exists "Profiles: self insert" on public.profiles;
 create policy "Profiles: self insert"
 on public.profiles
 for insert
 with check (id = auth.uid());
 
 -- Timeline RLS
+drop policy if exists "Timeline: owner insert" on public.timeline_entries;
 create policy "Timeline: owner insert"
 on public.timeline_entries
 for insert
 with check (user_id = auth.uid());
 
+drop policy if exists "Timeline: owner select or admin" on public.timeline_entries;
 create policy "Timeline: owner select or admin"
 on public.timeline_entries
 for select
 using (user_id = auth.uid() or public.is_admin(auth.uid()));
 
+drop policy if exists "Timeline: owner update" on public.timeline_entries;
 create policy "Timeline: owner update"
 on public.timeline_entries
 for update
 using (user_id = auth.uid())
 with check (user_id = auth.uid());
 
+drop policy if exists "Timeline: owner delete" on public.timeline_entries;
 create policy "Timeline: owner delete"
 on public.timeline_entries
 for delete
 using (user_id = auth.uid());
 
 -- Expenses RLS
+drop policy if exists "Expenses: owner insert" on public.expenses;
 create policy "Expenses: owner insert"
 on public.expenses
 for insert
 with check (user_id = auth.uid());
 
+drop policy if exists "Expenses: owner select or admin" on public.expenses;
 create policy "Expenses: owner select or admin"
 on public.expenses
 for select
 using (user_id = auth.uid() or public.is_admin(auth.uid()));
 
+drop policy if exists "Expenses: owner update" on public.expenses;
 create policy "Expenses: owner update"
 on public.expenses
 for update
 using (user_id = auth.uid())
 with check (user_id = auth.uid());
 
+drop policy if exists "Expenses: admin update any" on public.expenses;
 create policy "Expenses: admin update any"
 on public.expenses
 for update
 using (public.is_admin(auth.uid()))
 with check (true);
 
+drop policy if exists "Expenses: owner delete" on public.expenses;
 create policy "Expenses: owner delete"
 on public.expenses
 for delete
 using (user_id = auth.uid());
 
+drop policy if exists "Expenses: admin delete" on public.expenses;
 create policy "Expenses: admin delete"
 on public.expenses
 for delete
 using (public.is_admin(auth.uid()));
 
+-- Employee onboarding RLS
+drop policy if exists "Onboarding: owner insert" on public.employee_onboarding;
+create policy "Onboarding: owner insert"
+on public.employee_onboarding
+for insert
+with check (user_id = auth.uid());
+
+drop policy if exists "Onboarding: owner select or admin" on public.employee_onboarding;
+create policy "Onboarding: owner select or admin"
+on public.employee_onboarding
+for select
+using (user_id = auth.uid() or public.is_admin(auth.uid()));
+
+drop policy if exists "Onboarding: owner update" on public.employee_onboarding;
+create policy "Onboarding: owner update"
+on public.employee_onboarding
+for update
+using (user_id = auth.uid())
+with check (user_id = auth.uid());
+
+drop policy if exists "Onboarding: admin update any" on public.employee_onboarding;
+create policy "Onboarding: admin update any"
+on public.employee_onboarding
+for update
+using (public.is_admin(auth.uid()))
+with check (true);
+
 -- Storage buckets
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values
   ('receipts', 'receipts', true, 1048576, array['image/jpeg', 'image/png']),
-  ('exports', 'exports', true, 10485760, array['application/pdf', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'])
+  ('exports', 'exports', true, 10485760, array['application/pdf', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']),
+  ('employee-documents', 'employee-documents', false, 1048576, array['application/pdf', 'image/jpeg', 'image/png'])
 on conflict (id) do nothing;
 
 -- Storage policies: receipts
+drop policy if exists "Receipts: owner can upload" on storage.objects;
 create policy "Receipts: owner can upload"
 on storage.objects
 for insert
@@ -232,6 +340,7 @@ with check (
   and (storage.foldername(name))[1] = auth.uid()::text
 );
 
+drop policy if exists "Receipts: owner or admin can read" on storage.objects;
 create policy "Receipts: owner or admin can read"
 on storage.objects
 for select
@@ -244,6 +353,7 @@ using (
   )
 );
 
+drop policy if exists "Receipts: owner can delete" on storage.objects;
 create policy "Receipts: owner can delete"
 on storage.objects
 for delete
@@ -254,6 +364,7 @@ using (
 );
 
 -- Storage policies: exports
+drop policy if exists "Exports: owner can upload" on storage.objects;
 create policy "Exports: owner can upload"
 on storage.objects
 for insert
@@ -263,6 +374,7 @@ with check (
   and (storage.foldername(name))[1] = auth.uid()::text
 );
 
+drop policy if exists "Exports: owner or admin can read" on storage.objects;
 create policy "Exports: owner or admin can read"
 on storage.objects
 for select
@@ -275,11 +387,46 @@ using (
   )
 );
 
+drop policy if exists "Exports: owner can delete" on storage.objects;
 create policy "Exports: owner can delete"
 on storage.objects
 for delete
 to authenticated
 using (
   bucket_id = 'exports'
+  and (storage.foldername(name))[1] = auth.uid()::text
+);
+
+-- Storage policies: employee-documents
+drop policy if exists "Employee documents: owner can upload" on storage.objects;
+create policy "Employee documents: owner can upload"
+on storage.objects
+for insert
+to authenticated
+with check (
+  bucket_id = 'employee-documents'
+  and (storage.foldername(name))[1] = auth.uid()::text
+);
+
+drop policy if exists "Employee documents: owner or admin can read" on storage.objects;
+create policy "Employee documents: owner or admin can read"
+on storage.objects
+for select
+to authenticated
+using (
+  bucket_id = 'employee-documents'
+  and (
+    (storage.foldername(name))[1] = auth.uid()::text
+    or public.is_admin(auth.uid())
+  )
+);
+
+drop policy if exists "Employee documents: owner can delete" on storage.objects;
+create policy "Employee documents: owner can delete"
+on storage.objects
+for delete
+to authenticated
+using (
+  bucket_id = 'employee-documents'
   and (storage.foldername(name))[1] = auth.uid()::text
 );
