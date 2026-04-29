@@ -5,23 +5,18 @@ import Modal from '../components/Modal';
 import ReceiptUpload from '../components/ReceiptUpload';
 import TimePicker from '../components/TimePicker';
 import { useAuth } from '../context/AuthContext';
+import {
+  EXPENSE_CATEGORIES,
+  EXPENSE_CATEGORY_ICONS,
+  MISC_EXPENSE_CATEGORY,
+  PORTER_EXPENSE_CATEGORY,
+  extractExpenseCategories,
+  formatExpenseCategoryList,
+  getPrimaryExpenseCategory,
+  hasExpenseCategory
+} from '../lib/expenseCategories';
 import { supabase } from '../lib/supabaseClient';
 import { validatePositiveAmount } from '../utils/validation';
-
-const PROJECT_OPTIONS = ['HumanArchive', 'CPRT', 'Other'];
-
-function toProjectForm(project) {
-  if (!project) return { project_choice: 'HumanArchive', project_other: '' };
-  if (project === 'HumanArchive' || project === 'CPRT') {
-    return { project_choice: project, project_other: '' };
-  }
-  return { project_choice: 'Other', project_other: project };
-}
-
-function resolveProjectValue(form) {
-  if (form.project_choice === 'Other') return String(form.project_other || '').trim();
-  return form.project_choice;
-}
 
 function normalizeStatusHistory(value) {
   if (!Array.isArray(value)) return [];
@@ -40,39 +35,81 @@ function formatHistoryDate(value) {
   return `${day}-${month}-${year} ${String(hours).padStart(2, '0')}:${mins} ${suffix}`;
 }
 
-const CATEGORIES = [
-  'Food & Beverages',
-  'Miscellaneous',
-  'Groceries',
-  'Cab',
-  'Bus',
-  'Train',
-  'Tools or hardware',
-  'Porter Delivery for Hardware'
-];
-
-const CAT_ICONS = {
-  'Food & Beverages': '🍽️',
-  'Miscellaneous': '📦',
-  'Groceries': '🛒',
-  'Cab': '🚕',
-  'Bus': '🚌',
-  'Train': '🚆',
-  'Tools or hardware': '🧰',
-  'Porter Delivery for Hardware': '📦',
-};
-
 const STATUS_STYLES = {
-  pending:  'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
+  draft: 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300',
+  pending: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400',
   approved: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400',
-  rejected: 'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400',
+  rejected: 'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400'
 };
 
 const defaultForm = {
-  id: null, date: '', expense_time: '',
-  project_choice: 'HumanArchive', project_other: '',
-  category: 'Food & Beverages', amount: '', notes: '', receipt_url: '', status: 'pending'
+  id: null,
+  date: '',
+  expense_time: '',
+  project: '',
+  categories: ['Food & Beverages'],
+  amount: '',
+  notes: '',
+  receipt_url: '',
+  status: 'draft'
 };
+
+const WEEK_DAY_KEYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+
+function todayKey() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function dateKeyFromDate(value) {
+  const date = value instanceof Date ? value : new Date(value);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function addDays(dateKey, days) {
+  const date = new Date(`${dateKey}T00:00:00`);
+  date.setDate(date.getDate() + days);
+  return dateKeyFromDate(date);
+}
+
+function toHours(value) {
+  const numeric = Number(value || 0);
+  return Number.isFinite(numeric) ? numeric : 0;
+}
+
+// Collect dates that have ANY hours in ANY timesheet (draft, submitted, or approved)
+function collectFilledTimesheetDays(sheets) {
+  const result = new Set();
+  (sheets || []).forEach((sheet) => {
+    if (!sheet.week_start || !Array.isArray(sheet.rows)) return;
+    sheet.rows.forEach((row) => {
+      WEEK_DAY_KEYS.forEach((dayKey, idx) => {
+        if (toHours(row?.[dayKey]) > 0) result.add(addDays(sheet.week_start, idx));
+      });
+    });
+  });
+  return result;
+}
+
+function collectApprovedLeaveDays(leaves) {
+  const result = new Set();
+  (leaves || []).forEach((leave) => {
+    if (leave.status !== 'approved' || !leave.start_date || !leave.end_date) return;
+    const cursor = new Date(`${leave.start_date}T00:00:00`);
+    const end = new Date(`${leave.end_date}T00:00:00`);
+    while (cursor <= end) {
+      result.add(dateKeyFromDate(cursor));
+      cursor.setDate(cursor.getDate() + 1);
+    }
+  });
+  return result;
+}
 
 export default function ExpensePage() {
   const { user, profile } = useAuth();
@@ -81,79 +118,231 @@ export default function ExpensePage() {
   const [historyItem, setHistoryItem] = useState(null);
   const [form, setForm] = useState(defaultForm);
   const [filters, setFilters] = useState({ category: '', project: '', from: '', to: '' });
+  const [availableProjects, setAvailableProjects] = useState([]);
+  const [offsiteDates, setOffsiteDates] = useState([]);
+  const [approvedTimesheetDays, setApprovedTimesheetDays] = useState([]);
+  const [approvedLeaveDays, setApprovedLeaveDays] = useState([]);
   const [saving, setSaving] = useState(false);
 
-  const isMisc = form.category === 'Miscellaneous';
+  const isAdmin = profile?.role === 'admin';
+  const isMisc = form.categories.includes(MISC_EXPENSE_CATEGORY);
+  const maxExpenseDate = useMemo(() => todayKey(), []);
+  const offsiteDateSet = useMemo(() => new Set(offsiteDates), [offsiteDates]);
+  const approvedTimesheetDateSet = useMemo(() => new Set(approvedTimesheetDays), [approvedTimesheetDays]);
+  const approvedLeaveDateSet = useMemo(() => new Set(approvedLeaveDays), [approvedLeaveDays]);
+
+  // #1: Orphan detection — expense dates no longer backed by a filled timesheet or approved leave
+  const orphanExpenseDates = useMemo(() => {
+    if (isAdmin) return new Set();
+    const orphans = new Set();
+    items.forEach((entry) => {
+      if (entry.status === 'approved') return; // approved expenses are immutable, skip
+      if (!entry.date) return;
+      const onLeave = approvedLeaveDateSet.has(entry.date);
+      const onTimesheet = approvedTimesheetDateSet.has(entry.date);
+      if (!onLeave && !onTimesheet) orphans.add(entry.date);
+    });
+    return orphans;
+  }, [items, approvedTimesheetDateSet, approvedLeaveDateSet, isAdmin]);
+
+  const calendarDayToneMap = useMemo(() => {
+    const tones = {};
+    approvedTimesheetDays.forEach((dateKey) => { tones[dateKey] = 'green'; });
+    approvedLeaveDays.forEach((dateKey) => { tones[dateKey] = 'red'; });
+    return tones;
+  }, [approvedTimesheetDays, approvedLeaveDays]);
+
+  const getExpenseDateBlockReason = (dateValue, categories = form.categories) => {
+    if (!dateValue || isAdmin) return '';
+    if (dateValue > maxExpenseDate) return 'Future expense dates are not allowed.';
+    const onApprovedLeaveDate = approvedLeaveDateSet.has(dateValue);
+    const porterOnLeaveException = onApprovedLeaveDate && categories.includes(PORTER_EXPENSE_CATEGORY);
+    if (onApprovedLeaveDate && !porterOnLeaveException) return 'Expense cannot be raised on approved leave dates.';
+    if (offsiteDateSet.has(dateValue)) return 'Expense cannot be raised for an offsite day.';
+    if (!approvedTimesheetDateSet.has(dateValue) && !porterOnLeaveException) {
+      return 'Expense can only be added on dates with a filled timesheet or an approved leave.';
+    }
+    return '';
+  };
+
+  const isBlockedExpenseDate = (dateValue) => Boolean(getExpenseDateBlockReason(dateValue));
 
   async function fetchExpenses() {
-    let q = supabase.from('expenses').select('*, profiles(name)').order('date', { ascending: false });
-    if (profile?.role !== 'admin') q = q.eq('user_id', user.id);
-    const { data, error } = await q;
-    if (error) { toast.error(error.message); return; }
-    setItems(data || []);
+    let expenseQuery = supabase.from('expenses').select('*, profiles(name)').order('date', { ascending: false });
+    if (!isAdmin) expenseQuery = expenseQuery.eq('user_id', user.id);
+
+    const projectsQuery = isAdmin
+      ? supabase.from('projects').select('name, is_active').eq('is_active', true).order('name', { ascending: true })
+      : supabase.from('employee_project_assignments').select('projects(name, is_active)').eq('user_id', user.id);
+
+    const offsiteQuery = isAdmin
+      ? Promise.resolve({ data: [], error: null })
+      : supabase.from('timeline_entries').select('date').eq('user_id', user.id).eq('type', 'offsite');
+
+    const approvedTimesheetQuery = isAdmin
+      ? Promise.resolve({ data: [], error: null })
+      : supabase.from('weekly_timesheets').select('week_start, status, rows').eq('user_id', user.id);
+
+    const leaveQuery = isAdmin
+      ? Promise.resolve({ data: [], error: null })
+      : supabase.from('leave_requests').select('start_date, end_date, status').eq('user_id', user.id).eq('status', 'approved');
+
+    const [expenseRes, offsiteRes, approvedTimesheetRes, leaveRes, projectsRes] = await Promise.all([
+      expenseQuery,
+      offsiteQuery,
+      approvedTimesheetQuery,
+      leaveQuery,
+      projectsQuery
+    ]);
+
+    if (expenseRes.error) return toast.error(expenseRes.error.message);
+    if (offsiteRes.error) return toast.error(offsiteRes.error.message);
+    if (approvedTimesheetRes.error) return toast.error(approvedTimesheetRes.error.message);
+    if (leaveRes.error) return toast.error(leaveRes.error.message);
+    if (projectsRes.error) return toast.error(projectsRes.error.message);
+
+    const projectNames = isAdmin
+      ? (projectsRes.data || []).map((entry) => entry.name).filter(Boolean)
+      : (projectsRes.data || []).map((entry) => entry.projects?.name).filter(Boolean);
+
+    setItems(expenseRes.data || []);
+    setAvailableProjects([...new Set(projectNames)].sort((a, b) => a.localeCompare(b)));
+    setOffsiteDates([...(new Set((offsiteRes.data || []).map((entry) => entry.date).filter(Boolean)))]);
+    setApprovedTimesheetDays([...collectFilledTimesheetDays(approvedTimesheetRes.data || [])]);
+    setApprovedLeaveDays([...collectApprovedLeaveDays(leaveRes.data || [])]);
   }
 
-  useEffect(() => { fetchExpenses(); }, [profile?.role]);
+  useEffect(() => {
+    void fetchExpenses();
+  }, [profile?.role, user.id]);
 
-  const filtered = useMemo(() => items.filter((x) => {
-    if (filters.category && x.category !== filters.category) return false;
-    if (filters.project && x.project !== filters.project) return false;
-    if (filters.from && x.date < filters.from) return false;
-    if (filters.to && x.date > filters.to) return false;
+  useEffect(() => {
+    if (!user?.id || isAdmin) return undefined;
+
+    const channel = supabase
+      .channel(`expense-eligibility-${user.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'weekly_timesheets', filter: `user_id=eq.${user.id}` }, () => { void fetchExpenses(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'leave_requests', filter: `user_id=eq.${user.id}` }, () => { void fetchExpenses(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'timeline_entries', filter: `user_id=eq.${user.id}` }, () => { void fetchExpenses(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'employee_project_assignments', filter: `user_id=eq.${user.id}` }, () => { void fetchExpenses(); })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'projects' }, () => { void fetchExpenses(); })
+      // #10: Real-time approval notifications for expenses
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'expenses', filter: `user_id=eq.${user.id}` }, (payload) => {
+        const newStatus = payload.new?.status;
+        const oldStatus = payload.old?.status;
+        if (newStatus && newStatus !== oldStatus) {
+          if (newStatus === 'approved') toast.success(`Expense on ${payload.new.date} was approved!`);
+          else if (newStatus === 'rejected') toast.error(`Expense on ${payload.new.date} was rejected.`);
+        }
+        void fetchExpenses();
+      });
+
+    channel.subscribe();
+    return () => { void supabase.removeChannel(channel); };
+  }, [user?.id, isAdmin]);
+
+  const filtered = useMemo(() => items.filter((entry) => {
+    if (filters.category && !hasExpenseCategory(entry, filters.category)) return false;
+    if (filters.project && entry.project !== filters.project) return false;
+    if (filters.from && entry.date < filters.from) return false;
+    if (filters.to && entry.date > filters.to) return false;
     return true;
   }), [items, filters]);
 
-  const totalFiltered = filtered.reduce((s, x) => s + Number(x.amount), 0);
+  const approvedFiltered = useMemo(() => filtered.filter((entry) => entry.status === 'approved'), [filtered]);
+  const approvedTotalFiltered = useMemo(() => approvedFiltered.reduce((sum, entry) => sum + Number(entry.amount || 0), 0), [approvedFiltered]);
+  const canModifyExpense = (entry) => isAdmin || !['approved'].includes(entry.status);
 
-  const submit = async (e) => {
-    e.preventDefault();
-    if (!validatePositiveAmount(form.amount)) { toast.error('Amount must be greater than 0'); return; }
-    if (isMisc && !form.notes?.trim()) { toast.error('Notes are required for Miscellaneous expenses'); return; }
-    const projectValue = resolveProjectValue(form);
-    if (!projectValue) { toast.error('Project is required.'); return; }
+  const submit = async (event, submitMode = 'pending') => {
+    event.preventDefault();
+
+    if (!form.date) return toast.error('Date is required.');
+    if (!form.project) return toast.error('Project is required.');
+    if (!isAdmin && !availableProjects.includes(form.project)) return toast.error('Selected project is not assigned to you.');
+    if (!form.categories.length) return toast.error('Select at least one category.');
+
+    const blockedReason = getExpenseDateBlockReason(form.date, form.categories);
+    if (blockedReason) return toast.error(blockedReason);
+    if (!validatePositiveAmount(form.amount)) return toast.error('Amount must be greater than 0');
+    if (isMisc && !form.notes?.trim()) return toast.error('Notes are required for Miscellaneous expenses');
 
     setSaving(true);
+    const nextStatus = submitMode === 'draft' ? 'draft' : 'pending';
     const payload = {
       user_id: form.id ? form.user_id || user.id : user.id,
-      date: form.date, expense_time: form.expense_time,
-      project: projectValue,
-      category: form.category, amount: Number(form.amount),
-      notes: form.notes, receipt_url: form.receipt_url,
-      status: form.status || 'pending'
+      date: form.date,
+      expense_time: form.expense_time,
+      project: form.project,
+      categories: form.categories,
+      category: form.categories[0],
+      amount: Number(form.amount),
+      notes: form.notes,
+      receipt_url: form.receipt_url,
+      status: nextStatus
     };
-    const q = form.id
+
+    const query = form.id
       ? supabase.from('expenses').update(payload).eq('id', form.id)
-      : supabase.from('expenses').insert({ ...payload, status: 'pending' });
-    const { error } = await q;
+      : supabase.from('expenses').insert(payload);
+
+    const { error } = await query;
     setSaving(false);
-    if (error) { toast.error(error.message); return; }
-    toast.success(form.id ? 'Expense updated' : 'Expense added');
-    setForm(defaultForm); setOpen(false); fetchExpenses();
+
+    if (error) return toast.error(error.message);
+    toast.success(submitMode === 'draft' ? 'Expense saved as draft' : (form.id ? 'Expense submitted' : 'Expense submitted'));
+    setForm(defaultForm);
+    setOpen(false);
+    void fetchExpenses();
   };
 
   const remove = async (id) => {
+    const target = items.find((entry) => entry.id === id);
+    if (target && !canModifyExpense(target)) return toast.error('Approved expenses cannot be deleted.');
+
     const { error } = await supabase.from('expenses').delete().eq('id', id);
-    if (error) { toast.error(error.message); return; }
-    toast.success('Expense deleted'); fetchExpenses();
+    if (error) return toast.error(error.message);
+    toast.success('Expense deleted');
+    void fetchExpenses();
   };
 
-  const openAdd = () => { setForm(defaultForm); setOpen(true); };
-  const openEdit = (item) => {
+  const openAdd = async () => {
+    await fetchExpenses();
+    const sortedAllowedDates = [...approvedTimesheetDays]
+      .filter((dateKey) => !isBlockedExpenseDate(dateKey))
+      .sort((a, b) => (a < b ? 1 : -1));
+
+    const defaultDate = !isAdmin && !isBlockedExpenseDate(maxExpenseDate)
+      ? maxExpenseDate
+      : (!isAdmin ? (sortedAllowedDates[0] || '') : '');
+
     setForm({
       ...defaultForm,
-      ...item,
-      ...toProjectForm(item.project)
+      date: defaultDate,
+      project: availableProjects[0] || '',
+      categories: [EXPENSE_CATEGORIES[0]]
+    });
+    setOpen(true);
+  };
+
+  const openEdit = (entry) => {
+    if (!canModifyExpense(entry)) return toast.error('Approved expenses cannot be edited.');
+    setForm({
+      ...defaultForm,
+      ...entry,
+      project: entry.project || '',
+      categories: extractExpenseCategories(entry)
     });
     setOpen(true);
   };
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-extrabold text-ink dark:text-white">Expenses</h1>
-          <p className="mt-0.5 text-sm text-slate-400">{filtered.length} records · Total: ₹{totalFiltered.toFixed(2)}</p>
+          <p className="mt-0.5 text-sm text-slate-400">
+            {filtered.length} records · Approved: {approvedFiltered.length} · Admin Approved Expense Total: ₹{approvedTotalFiltered.toFixed(2)}
+          </p>
         </div>
         <button className="btn-primary flex items-center gap-2" onClick={openAdd}>
           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
@@ -161,94 +350,66 @@ export default function ExpensePage() {
         </button>
       </div>
 
-      {/* Filters */}
       <div className="card grid gap-3 p-4 dark:border-slate-700 dark:bg-slate-800 md:grid-cols-5">
-        <select
-          className="field dark:border-slate-600 dark:bg-slate-700 dark:text-white"
-          value={filters.category}
-          onChange={(e) => setFilters((x) => ({ ...x, category: e.target.value }))}
-        >
+        <select className="field dark:border-slate-600 dark:bg-slate-700 dark:text-white" value={filters.category} onChange={(e) => setFilters((x) => ({ ...x, category: e.target.value }))}>
           <option value="">All Categories</option>
-          {CATEGORIES.map((c) => <option key={c} value={c}>{CAT_ICONS[c]} {c}</option>)}
+          {EXPENSE_CATEGORIES.map((category) => <option key={category} value={category}>{EXPENSE_CATEGORY_ICONS[category]} {category}</option>)}
         </select>
-        <select
-          className="field dark:border-slate-600 dark:bg-slate-700 dark:text-white"
-          value={filters.project}
-          onChange={(e) => setFilters((x) => ({ ...x, project: e.target.value }))}
-        >
+        <select className="field dark:border-slate-600 dark:bg-slate-700 dark:text-white" value={filters.project} onChange={(e) => setFilters((x) => ({ ...x, project: e.target.value }))}>
           <option value="">All Projects</option>
-          {[...new Set(items.map((x) => x.project).filter(Boolean))].map((p) => <option key={p} value={p}>{p}</option>)}
+          {[...new Set(items.map((entry) => entry.project).filter(Boolean))].map((project) => <option key={project} value={project}>{project}</option>)}
         </select>
         <DatePicker value={filters.from} onChange={(v) => setFilters((x) => ({ ...x, from: v }))} placeholder="From date" />
         <DatePicker value={filters.to} onChange={(v) => setFilters((x) => ({ ...x, to: v }))} placeholder="To date" />
-        <button
-          className="btn-secondary flex items-center justify-center gap-2 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600"
-          onClick={() => setFilters({ category: '', project: '', from: '', to: '' })}
-        >
+        <button className="btn-secondary flex items-center justify-center gap-2 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600" onClick={() => setFilters({ category: '', project: '', from: '', to: '' })}>
           <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
           Clear
         </button>
       </div>
 
-      {/* Table */}
       <div className="card overflow-hidden dark:border-slate-700 dark:bg-slate-800">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[980px] text-sm">
             <thead>
               <tr className="border-b border-slate-100 bg-slate-50 dark:border-slate-700 dark:bg-slate-900/70">
-                {['Date', 'Time', 'Project', 'Category', 'Amount', 'Status', 'Notes', 'Receipt', ...(profile?.role === 'admin' ? ['User'] : []), 'Actions'].map((h) => (
-                  <th key={h} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">{h}</th>
+                {['Date', 'Time', 'Project', 'Category', 'Amount', 'Status', 'Conflicts', 'Notes', 'Receipt', ...(profile?.role === 'admin' ? ['User'] : []), 'Actions'].map((header) => (
+                  <th key={header} className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wider text-slate-500 dark:text-slate-400">{header}</th>
                 ))}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50 dark:divide-slate-700/60">
-              {filtered.length === 0 && (
-                <tr><td colSpan={10} className="py-12 text-center text-sm text-slate-400 dark:text-slate-500">No expenses found. Add your first expense!</td></tr>
-              )}
-              {filtered.map((item) => (
-                <tr key={item.id} className="group transition hover:bg-slate-50/90 dark:hover:bg-slate-700/35">
-                  <td className="px-4 py-3 font-medium text-ink dark:text-slate-100">
-                    {new Date(item.date + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
-                  </td>
-                  <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{item.expense_time?.slice(0,5) || '—'}</td>
-                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{item.project || '—'}</td>
+              {filtered.length === 0 ? (
+                <tr><td colSpan={10} className="py-12 text-center text-sm text-slate-400 dark:text-slate-500">No expenses found. Add your first expense.</td></tr>
+              ) : null}
+              {filtered.map((entry) => (
+                <tr key={entry.id} className="group transition hover:bg-slate-50/90 dark:hover:bg-slate-700/35">
+                  <td className="px-4 py-3 font-medium text-ink dark:text-slate-100">{new Date(`${entry.date}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                  <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{entry.expense_time?.slice(0, 5) || '—'}</td>
+                  <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{entry.project || '—'}</td>
                   <td className="px-4 py-3">
                     <span className="flex items-center gap-1.5">
-                      <span>{CAT_ICONS[item.category]}</span>
-                      <span className="text-slate-700 dark:text-slate-200">{item.category}</span>
+                      <span>{EXPENSE_CATEGORY_ICONS[getPrimaryExpenseCategory(entry)]}</span>
+                      <span className="text-slate-700 dark:text-slate-200">{formatExpenseCategoryList(entry)}</span>
                     </span>
                   </td>
-                  <td className="px-4 py-3 font-bold text-ink dark:text-slate-100">₹{Number(item.amount).toFixed(2)}</td>
+                  <td className="px-4 py-3 font-bold text-ink dark:text-slate-100">₹{Number(entry.amount || 0).toFixed(2)}</td>
                   <td className="px-4 py-3">
-                    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${STATUS_STYLES[item.status] || ''}`}>
-                      {item.status}
-                    </span>
-                    {item.approval_comment ? (
-                      <p className="mt-1 max-w-[180px] truncate text-[11px] text-slate-500 dark:text-slate-400">
-                        {item.approval_comment}
-                      </p>
+                    <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${STATUS_STYLES[entry.status] || ''}`}>{entry.status}</span>
+                    {orphanExpenseDates.has(entry.date) ? (
+                      <span className="ml-1 inline-flex rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-semibold text-orange-600 dark:bg-orange-900/30 dark:text-orange-300" title="Timesheet no longer covers this date">⚠ orphan</span>
                     ) : null}
                   </td>
-                  <td className="max-w-[160px] truncate px-4 py-3 text-slate-500 dark:text-slate-400">{item.notes || '—'}</td>
+                  <td className="px-4 py-3">{Array.isArray(entry.conflict_flags) && entry.conflict_flags.length ? entry.conflict_flags.join(', ') : '—'}</td>
+                  <td className="max-w-[160px] truncate px-4 py-3 text-slate-500 dark:text-slate-400">{entry.notes || '—'}</td>
                   <td className="px-4 py-3">
-                    {item.receipt_url
-                      ? <a href={item.receipt_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg bg-teal/10 px-2.5 py-1 text-xs font-semibold text-teal hover:bg-teal/20 transition dark:bg-teal/20 dark:text-teal-300">
-                          <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" /></svg>
-                          View
-                        </a>
-                      : <span className="text-slate-300 dark:text-slate-600">—</span>}
+                    {entry.receipt_url ? <a href={entry.receipt_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg bg-teal/10 px-2.5 py-1 text-xs font-semibold text-teal hover:bg-teal/20 transition dark:bg-teal/20 dark:text-teal-300">View</a> : <span className="text-slate-300 dark:text-slate-600">—</span>}
                   </td>
-                  {profile?.role === 'admin' && <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{item.profiles?.name}</td>}
+                  {profile?.role === 'admin' ? <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{entry.profiles?.name}</td> : null}
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1.5 opacity-0 transition group-hover:opacity-100">
-                      <button
-                        onClick={() => setHistoryItem(item)}
-                        className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600 shadow-sm transition hover:border-teal/40 hover:text-teal dark:border-slate-600 dark:bg-slate-700 dark:text-slate-300"
-                      >
-                        History
-                      </button>
-                      <button onClick={() => openEdit(item)} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600 shadow-sm transition hover:border-teal/40 hover:text-teal dark:border-slate-600 dark:bg-slate-700 dark:text-slate-300">Edit</button>
-                      <button onClick={() => remove(item.id)} className="rounded-lg border border-red-100 bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-500 shadow-sm transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-400">Delete</button>
+                      <button onClick={() => setHistoryItem(entry)} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600 shadow-sm transition hover:border-teal/40 hover:text-teal dark:border-slate-600 dark:bg-slate-700 dark:text-slate-300">History</button>
+                      <button onClick={() => openEdit(entry)} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600 shadow-sm transition hover:border-teal/40 hover:text-teal disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-300" disabled={!canModifyExpense(entry)}>Edit</button>
+                      <button onClick={() => remove(entry.id)} className="rounded-lg border border-red-100 bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-500 shadow-sm transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-400" disabled={!canModifyExpense(entry)}>Delete</button>
                     </div>
                   </td>
                 </tr>
@@ -258,13 +419,22 @@ export default function ExpensePage() {
         </div>
       </div>
 
-      {/* Modal */}
       <Modal title={form.id ? 'Edit Expense' : 'New Expense'} open={open} onClose={() => setOpen(false)}>
         <form className="space-y-4" onSubmit={submit}>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <div>
               <label className="form-label">Date <span className="text-red-500">*</span></label>
-              <DatePicker value={form.date} onChange={(v) => setForm((x) => ({ ...x, date: v }))} placeholder="Pick a date" />
+              <DatePicker
+                value={form.date}
+                onChange={(v) => setForm((x) => ({ ...x, date: v }))}
+                placeholder="Pick a date"
+                maxDate={isAdmin ? undefined : maxExpenseDate}
+                disabledDates={isAdmin ? [] : offsiteDates}
+                isDateDisabled={isAdmin ? undefined : (dateKey) => isBlockedExpenseDate(dateKey)}
+                dayToneMap={isAdmin ? {} : calendarDayToneMap}
+              />
+              {!isAdmin ? <p className="mt-1 text-[11px] text-slate-400">Green: dates with filled timesheet hours. Red: approved leave (Porter delivery exception applies).</p> : null}
+              {!isAdmin && form.date && isBlockedExpenseDate(form.date) ? <p className="mt-1 text-[11px] font-semibold text-red-500">{getExpenseDateBlockReason(form.date)}</p> : null}
             </div>
             <div>
               <label className="form-label">Time <span className="text-red-500">*</span></label>
@@ -274,93 +444,61 @@ export default function ExpensePage() {
 
           <div>
             <label className="form-label">Project <span className="text-red-500">*</span></label>
-            <select
-              className="field dark:border-slate-600 dark:bg-slate-700 dark:text-white"
-              value={form.project_choice}
-              onChange={(e) => setForm((x) => ({
-                ...x,
-                project_choice: e.target.value,
-                project_other: e.target.value === 'Other' ? x.project_other : ''
-              }))}
-              required
-            >
-              {PROJECT_OPTIONS.map((option) => <option key={option} value={option}>{option}</option>)}
+            <select className="field dark:border-slate-600 dark:bg-slate-700 dark:text-white" value={form.project} onChange={(e) => setForm((x) => ({ ...x, project: e.target.value }))} required>
+              <option value="">Select Project</option>
+              {availableProjects.map((projectName) => <option key={projectName} value={projectName}>{projectName}</option>)}
             </select>
-            {form.project_choice === 'Other' && (
-              <input
-                className="field mt-2 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
-                type="text"
-                required
-                value={form.project_other}
-                onChange={(e) => setForm((x) => ({ ...x, project_other: e.target.value }))}
-                placeholder="Enter project name"
-              />
-            )}
+            {!availableProjects.length ? <p className="mt-1 text-xs text-amber-600 dark:text-amber-300">No projects assigned. Ask admin to assign a project before adding expense.</p> : null}
           </div>
 
           <div>
-            <label className="form-label">Category <span className="text-red-500">*</span></label>
+            <label className="form-label">Categories <span className="text-red-500">*</span></label>
             <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
-              {CATEGORIES.map((cat) => (
-                <button
-                  key={cat}
-                  type="button"
-                  onClick={() => setForm((x) => ({ ...x, category: cat, notes: cat !== 'Miscellaneous' ? x.notes : x.notes }))}
-                  className={`flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold transition
-                    ${form.category === cat
-                      ? 'border-teal bg-teal text-white shadow shadow-teal/30'
-                      : 'border-slate-200 bg-white text-slate-600 hover:border-teal/40 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300'
-                    }`}
-                >
-                  <span>{CAT_ICONS[cat]}</span> {cat}
-                </button>
+              {EXPENSE_CATEGORIES.map((category) => (
+                <label key={category} className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition ${form.categories.includes(category) ? 'border-teal bg-teal text-white shadow shadow-teal/30' : 'border-slate-200 bg-white text-slate-600 hover:border-teal/40 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300'}`}>
+                  <input
+                    type="checkbox"
+                    checked={form.categories.includes(category)}
+                    onChange={(event) => {
+                      const checked = event.target.checked;
+                      setForm((x) => {
+                        const next = new Set(x.categories);
+                        if (checked) next.add(category);
+                        else next.delete(category);
+                        return { ...x, categories: [...next] };
+                      });
+                    }}
+                    className="h-3.5 w-3.5"
+                  />
+                  <span>{EXPENSE_CATEGORY_ICONS[category]}</span>
+                  <span>{category}</span>
+                </label>
               ))}
             </div>
           </div>
 
           <div>
             <label className="form-label">Amount (₹) <span className="text-red-500">*</span></label>
-            <input
-              className="field dark:border-slate-600 dark:bg-slate-700 dark:text-white"
-              type="number" min="0.01" step="0.01" required
-              value={form.amount}
-              onChange={(e) => setForm((x) => ({ ...x, amount: e.target.value }))}
-              placeholder="0.00"
-            />
+            <input className="field dark:border-slate-600 dark:bg-slate-700 dark:text-white" type="number" min="0.01" step="0.01" required value={form.amount} onChange={(e) => setForm((x) => ({ ...x, amount: e.target.value }))} placeholder="0.00" />
           </div>
 
           <div>
-            <label className="form-label">
-              Notes {isMisc ? <span className="text-red-500">* <span className="font-normal normal-case text-red-400">(required for Miscellaneous)</span></span> : <span className="text-slate-400 font-normal">(optional)</span>}
-            </label>
-            <textarea
-              className={`field resize-none dark:border-slate-600 dark:bg-slate-700 dark:text-white ${isMisc ? 'border-amber-300 focus:border-amber-400 focus:ring-amber-200' : ''}`}
-              rows={3}
-              required={isMisc}
-              value={form.notes}
-              onChange={(e) => setForm((x) => ({ ...x, notes: e.target.value }))}
-              placeholder={isMisc ? 'Please describe this miscellaneous expense…' : 'Add a note…'}
-            />
-            {isMisc && !form.notes?.trim() && (
-              <p className="mt-1 flex items-center gap-1 text-xs text-amber-500">
-                <svg className="h-3 w-3" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clipRule="evenodd" /></svg>
-                Notes are required for Miscellaneous
-              </p>
-            )}
+            <label className="form-label">Notes {isMisc ? <span className="text-red-500">* (required for Miscellaneous)</span> : <span className="text-slate-400 font-normal">(optional)</span>}</label>
+            <textarea className={`field resize-none dark:border-slate-600 dark:bg-slate-700 dark:text-white ${isMisc ? 'border-amber-300 focus:border-amber-400 focus:ring-amber-200' : ''}`} rows={3} required={isMisc} value={form.notes} onChange={(e) => setForm((x) => ({ ...x, notes: e.target.value }))} placeholder={isMisc ? 'Please describe this miscellaneous expense…' : 'Add a note…'} />
           </div>
 
-          <ReceiptUpload
-            userId={user.id}
-            currentUrl={form.receipt_url}
-            required
-            onUploaded={(url) => setForm((x) => ({ ...x, receipt_url: url }))}
-          />
+          <ReceiptUpload userId={user.id} currentUrl={form.receipt_url} required onUploaded={(url) => setForm((x) => ({ ...x, receipt_url: url }))} />
 
-          <button className="btn-primary w-full py-3" type="submit" disabled={saving}>
-            {saving
-              ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
-              : (form.id ? 'Update Expense' : 'Add Expense')}
-          </button>
+          <div className="flex gap-2">
+            {!isAdmin ? (
+              <button className="btn-secondary flex-1 py-3" type="button" disabled={saving} onClick={(e) => submit(e, 'draft')}>
+                {saving ? '...' : 'Save Draft'}
+              </button>
+            ) : null}
+            <button className="btn-primary flex-1 py-3" type="button" disabled={saving} onClick={(e) => submit(e, 'pending')}>
+              {saving ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" /> : (form.id ? 'Update & Submit' : 'Submit Expense')}
+            </button>
+          </div>
         </form>
       </Modal>
 
@@ -370,6 +508,7 @@ export default function ExpensePage() {
             <div className="rounded-lg border border-slate-200 p-3 text-sm dark:border-slate-700">
               <p><span className="font-semibold">Date:</span> {historyItem.date}</p>
               <p><span className="font-semibold">Project:</span> {historyItem.project || '-'}</p>
+              <p><span className="font-semibold">Categories:</span> {formatExpenseCategoryList(historyItem)}</p>
               <p><span className="font-semibold">Amount:</span> ₹{Number(historyItem.amount || 0).toFixed(2)}</p>
             </div>
 

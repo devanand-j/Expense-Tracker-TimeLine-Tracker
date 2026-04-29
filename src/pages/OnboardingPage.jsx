@@ -84,8 +84,11 @@ const REQUIRED_DOCUMENT_FIELDS = [
 
 function emptyPreviousCompany() {
   return {
+    id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
     company_name: '',
     designation: '',
+    joining_date: '',
+    last_working_date: '',
     duration: '',
     last_drawn_salary: '',
     reason_for_leaving: ''
@@ -94,6 +97,7 @@ function emptyPreviousCompany() {
 
 function emptyQualification() {
   return {
+    id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
     qualification: '',
     degree: '',
     institution: '',
@@ -104,6 +108,7 @@ function emptyQualification() {
 
 function emptyProject() {
   return {
+    id: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
     project_name: '',
     role: '',
     technologies_used: '',
@@ -129,11 +134,34 @@ function isNonEmpty(value) {
 }
 
 function validateAadhaar(value) {
-  return /^\d{12}$/.test(String(value || '').replace(/\s+/g, ''));
+  return /^\d{4}\s\d{4}\s\d{4}\s\d{4}$/.test(String(value || '').trim());
+}
+
+function formatAadhaarInput(value) {
+  const digitsOnly = String(value || '').replace(/\D/g, '').slice(0, 16);
+  const chunks = digitsOnly.match(/.{1,4}/g) || [];
+  return chunks.join(' ');
 }
 
 function validatePan(value) {
-  return /^[A-Z]{5}[0-9]{4}[A-Z]$/i.test(String(value || '').trim());
+  const pan = String(value || '').trim().toUpperCase();
+  if (!/^[A-Z]{5}[0-9]{4}[A-Z]$/.test(pan)) return false;
+
+  const entityType = pan[3];
+  const validEntityTypes = new Set(['P', 'C', 'H', 'F', 'T', 'A', 'B', 'G', 'J', 'L']);
+  if (!validEntityTypes.has(entityType)) return false;
+
+  const sequence = Number(pan.slice(5, 9));
+  if (!Number.isInteger(sequence) || sequence < 1 || sequence > 9999) return false;
+
+  return true;
+}
+
+function formatPanInput(value) {
+  return String(value || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]/g, '')
+    .slice(0, 10);
 }
 
 function validateIfsc(value) {
@@ -142,6 +170,25 @@ function validateIfsc(value) {
 
 function validateUpi(value) {
   return /^[\w.-]+@[\w.-]+$/.test(String(value || '').trim());
+}
+
+function validateMinimumAge(dateOfBirth, minimumAge = 18) {
+  if (!dateOfBirth) return false;
+  const dob = new Date(`${dateOfBirth}T00:00:00`);
+  if (Number.isNaN(dob.getTime())) return false;
+
+  const today = new Date();
+  const threshold = new Date(today.getFullYear() - minimumAge, today.getMonth(), today.getDate());
+  return dob <= threshold;
+}
+
+function getMaxDobForMinimumAge(minimumAge = 18) {
+  const today = new Date();
+  const threshold = new Date(today.getFullYear() - minimumAge, today.getMonth(), today.getDate());
+  const year = threshold.getFullYear();
+  const month = String(threshold.getMonth() + 1).padStart(2, '0');
+  const day = String(threshold.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function normalizeCommaSeparated(value) {
@@ -272,14 +319,36 @@ function splitPayload(form) {
   delete employeeEditableData.reviewed_at;
   delete employeeEditableData.submitted_at;
 
+  employeeEditableData.previous_companies = (employeeEditableData.previous_companies || []).map(({ id, ...item }) => item);
+  employeeEditableData.qualifications = (employeeEditableData.qualifications || []).map(({ id, ...item }) => item);
+  employeeEditableData.projects = (employeeEditableData.projects || []).map(({ id, ...item }) => item);
+
   return { employeeEditableData, hrManagedData };
 }
 
 function mergeData(employeeEditableData, hrManagedData, metadata) {
+  const previousCompanies = (employeeEditableData?.previous_companies || []).map((item) => ({
+    id: item.id || globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+    joining_date: item.joining_date || '',
+    last_working_date: item.last_working_date || '',
+    ...item
+  }));
+  const qualifications = (employeeEditableData?.qualifications || []).map((item) => ({
+    id: item.id || globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+    ...item
+  }));
+  const projects = (employeeEditableData?.projects || []).map((item) => ({
+    id: item.id || globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random()}`,
+    ...item
+  }));
+
   return {
     ...defaultFormState(),
     ...(hrManagedData || {}),
     ...(employeeEditableData || {}),
+    previous_companies: previousCompanies,
+    qualifications: qualifications.length ? qualifications : [emptyQualification()],
+    projects: projects.length ? projects : [emptyProject()],
     onboarding_status: metadata?.onboarding_status || 'draft',
     review_comment: metadata?.review_comment || '',
     reviewed_by: metadata?.reviewed_by || '',
@@ -297,6 +366,9 @@ export default function OnboardingPage() {
   const [reviewing, setReviewing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [uploadingDocs, setUploadingDocs] = useState({});
+  const [viewMode, setViewMode] = useState(false);
+
+  const maxDob = useMemo(() => getMaxDobForMinimumAge(18), []);
 
   const isAdmin = profile?.role === 'admin';
 
@@ -322,6 +394,7 @@ export default function OnboardingPage() {
           data
         )
       );
+      setViewMode(true);
     }
 
     setLoading(false);
@@ -346,6 +419,10 @@ export default function OnboardingPage() {
       missing.push('Aadhaar Number format');
     }
 
+    if (!validateMinimumAge(form.date_of_birth, 18)) {
+      missing.push('Date of Birth (minimum age is 18 years)');
+    }
+
     if (!validatePan(form.pan_number)) {
       missing.push('PAN Number format');
     }
@@ -363,7 +440,7 @@ export default function OnboardingPage() {
         missing.push('At least one previous company');
       }
       form.previous_companies.forEach((item, index) => {
-        if (!item.company_name || !item.designation || !item.duration || !item.last_drawn_salary || !item.reason_for_leaving) {
+        if (!item.company_name || !item.designation || !item.joining_date || !item.last_working_date || !item.last_drawn_salary || !item.reason_for_leaving) {
           missing.push(`Previous company #${index + 1}`);
         }
       });
@@ -423,6 +500,13 @@ export default function OnboardingPage() {
       [arrayKey]: [...prev[arrayKey], creator()]
     }));
   };
+
+  const formatCommaSeparated = (value) =>
+    String(value || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .join(', ');
 
   const getSignedDocumentUrl = async (path) => {
     const { data, error } = await supabase.storage
@@ -545,6 +629,11 @@ export default function OnboardingPage() {
   const saveForm = async (e, mode = 'draft') => {
     if (e?.preventDefault) e.preventDefault();
 
+    if (!validateMinimumAge(form.date_of_birth, 18)) {
+      toast.error('Date of Birth is invalid. Minimum age required is 18 years.');
+      return;
+    }
+
     if (!isAdmin && mode === 'submit' && missingRequired.length > 0) {
       toast.error(`Please complete required fields (${missingRequired[0]}).`);
       return;
@@ -594,9 +683,9 @@ export default function OnboardingPage() {
       <div className="card p-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-ink dark:text-white">Employee Onboarding</h1>
+            <h1 className="text-2xl font-bold text-ink dark:text-white">Employee Database</h1>
             <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-              Fill in your onboarding details carefully. Fields marked with * are mandatory.
+              {viewMode ? 'Viewing your onboarding details.' : 'Fill in your onboarding details carefully. Fields marked with * are mandatory.'}
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -606,6 +695,13 @@ export default function OnboardingPage() {
             <span className="rounded-full border border-teal/20 bg-teal/5 px-3 py-1 text-xs font-semibold text-teal dark:bg-teal/10 dark:text-teal-300">
               {isAdmin ? 'HR managed + employee editable' : 'Employee editable form'}
             </span>
+            <button
+              type="button"
+              className="btn-secondary px-3 py-1 text-xs"
+              onClick={() => setViewMode((v) => !v)}
+            >
+              {viewMode ? 'Edit' : 'View Details'}
+            </button>
           </div>
         </div>
         <div className="mt-3 rounded-md border border-teal/30 bg-teal/5 px-3 py-2 text-xs text-teal dark:bg-teal/10 dark:text-teal-300">
@@ -613,13 +709,111 @@ export default function OnboardingPage() {
         </div>
       </div>
 
+      {viewMode ? (
+        <div className="space-y-4">
+          {[
+            { label: 'Full Name', value: [form.first_name, form.last_name].filter(Boolean).join(' ') },
+            { label: 'Date of Birth', value: form.date_of_birth },
+            { label: 'Gender', value: form.gender },
+            { label: 'Blood Group', value: form.blood_group },
+            { label: 'Phone', value: form.phone_number },
+            { label: 'Email', value: form.email_address },
+            { label: 'Marital Status', value: form.marital_status },
+            { label: 'Aadhaar', value: form.aadhaar_number },
+            { label: 'PAN', value: form.pan_number },
+            { label: 'Father Name', value: form.father_name },
+            { label: 'Mother Name', value: form.mother_name },
+            { label: 'Emergency Contact', value: form.emergency_contact_name ? `${form.emergency_contact_name} (${form.emergency_contact_relationship}) — ${form.emergency_contact_phone}` : '' },
+            { label: 'Current Address', value: form.current_address },
+            { label: 'Permanent Address', value: form.permanent_address },
+            { label: 'City / State / Pincode', value: [form.city, form.state, form.pincode].filter(Boolean).join(', ') },
+            { label: 'Bank', value: form.bank_name },
+            { label: 'Account Number', value: form.account_number },
+            { label: 'IFSC', value: form.ifsc_code },
+            { label: 'UPI ID', value: form.upi_id },
+            { label: 'Employee ID', value: form.employee_id },
+            { label: 'Department', value: form.department },
+            { label: 'Designation', value: form.designation },
+            { label: 'Date of Joining', value: form.date_of_joining },
+            { label: 'Employment Type', value: form.employment_type },
+            { label: 'Work Location', value: form.work_location },
+            { label: 'Reporting Manager', value: form.reporting_manager },
+            { label: 'Highest Qualification', value: form.highest_qualification },
+            { label: 'Degree', value: form.degree },
+            { label: 'College / University', value: form.college_university },
+            { label: 'Year of Passing', value: form.year_of_passing },
+            { label: 'Primary Skills', value: form.primary_skills },
+            { label: 'Tools / Technologies', value: form.tools_technologies },
+            { label: 'LinkedIn', value: form.linkedin_profile },
+            { label: 'Notice Period', value: form.notice_period },
+            { label: 'Willing to Relocate', value: form.willing_to_relocate },
+          ].map(({ label, value }) => (
+            <div key={label} className="card flex flex-col gap-1 p-4 sm:flex-row sm:items-start sm:gap-4">
+              <p className="w-48 shrink-0 text-xs font-semibold uppercase tracking-wider text-slate-400">{label}</p>
+              <p className="text-sm text-slate-700 dark:text-slate-200">{value || '—'}</p>
+            </div>
+          ))}
+
+          {form.worked_before === 'Yes' && form.previous_companies.length > 0 && (
+            <div className="card p-4">
+              <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Previous Employment</p>
+              <div className="space-y-3">
+                {form.previous_companies.map((item, i) => (
+                  <div key={i} className="rounded-lg border border-[#dddddd] p-3 text-sm dark:border-[#444]">
+                    <p className="font-semibold">{item.company_name} — {item.designation}</p>
+                    <p className="text-xs text-slate-500">{item.joining_date} to {item.last_working_date}</p>
+                    <p className="text-xs text-slate-500">Last Salary: {item.last_drawn_salary} · Reason: {item.reason_for_leaving}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {form.qualifications.length > 0 && (
+            <div className="card p-4">
+              <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Qualifications</p>
+              <div className="space-y-3">
+                {form.qualifications.map((item, i) => (
+                  <div key={i} className="rounded-lg border border-[#dddddd] p-3 text-sm dark:border-[#444]">
+                    <p className="font-semibold">{item.qualification} — {item.degree}</p>
+                    <p className="text-xs text-slate-500">{item.institution} · {item.year_of_passing} · {item.percentage_cgpa}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {form.projects.length > 0 && (
+            <div className="card p-4">
+              <p className="mb-3 text-xs font-semibold uppercase tracking-wider text-slate-400">Projects</p>
+              <div className="space-y-3">
+                {form.projects.map((item, i) => (
+                  <div key={i} className="rounded-lg border border-[#dddddd] p-3 text-sm dark:border-[#444]">
+                    <p className="font-semibold">{item.project_name} — {item.role}</p>
+                    <p className="text-xs text-slate-500">{item.technologies_used} · {item.duration}</p>
+                    <p className="text-xs text-slate-500">{item.description}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {isAdmin && form.review_comment && (
+            <div className="card p-4">
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Review Comment</p>
+              <p className="mt-1 text-sm text-slate-700 dark:text-slate-200">{form.review_comment}</p>
+              {form.reviewed_at && <p className="mt-1 text-xs text-slate-400">Reviewed: {new Date(form.reviewed_at).toLocaleString()}</p>}
+            </div>
+          )}
+        </div>
+      ) : (
       <form className="space-y-6" onSubmit={saveForm}>
         <section className="card p-5">
           <h2 className="mb-4 text-lg font-semibold">1. Personal Information</h2>
           <div className="grid gap-3 md:grid-cols-2">
             <input className={inputClass()} placeholder="First Name *" value={form.first_name} onChange={(e) => setValue('first_name', e.target.value)} />
             <input className={inputClass()} placeholder="Last Name *" value={form.last_name} onChange={(e) => setValue('last_name', e.target.value)} />
-            <input className={inputClass()} type="date" value={form.date_of_birth} onChange={(e) => setValue('date_of_birth', e.target.value)} />
+            <input className={inputClass()} type="date" max={maxDob} value={form.date_of_birth} onChange={(e) => setValue('date_of_birth', e.target.value)} />
             <select className={inputClass()} value={form.gender} onChange={(e) => setValue('gender', e.target.value)}>
               <option value="">Gender *</option>
               {GENDER_OPTIONS.map((value) => <option key={value} value={value}>{value}</option>)}
@@ -640,8 +834,24 @@ export default function OnboardingPage() {
         <section className="card p-5">
           <h2 className="mb-4 text-lg font-semibold">2. Identity (KYC) Details</h2>
           <div className="grid gap-3 md:grid-cols-2">
-            <input className={inputClass()} placeholder="Aadhaar Number *" value={form.aadhaar_number} onChange={(e) => setValue('aadhaar_number', e.target.value)} />
-            <input className={inputClass()} placeholder="PAN Number *" value={form.pan_number} onChange={(e) => setValue('pan_number', e.target.value)} />
+            <input
+              className={inputClass()}
+              placeholder="Aadhaar Number *"
+              value={form.aadhaar_number}
+              onChange={(e) => setValue('aadhaar_number', formatAadhaarInput(e.target.value))}
+              maxLength={19}
+              inputMode="numeric"
+            />
+            <div>
+              <input
+                className={inputClass()}
+                placeholder="PAN Number *"
+                value={form.pan_number}
+                onChange={(e) => setValue('pan_number', formatPanInput(e.target.value))}
+                maxLength={10}
+              />
+              <p className="mt-1 text-[11px] text-slate-400">Format: AAAAA0000A (4th letter must be one of P/C/H/F/T/A/B/G/J/L)</p>
+            </div>
             <input className={inputClass()} placeholder="Passport Number (optional)" value={form.passport_number} onChange={(e) => setValue('passport_number', e.target.value)} />
           </div>
         </section>
@@ -740,7 +950,7 @@ export default function OnboardingPage() {
           {form.worked_before === 'Yes' && (
             <div className="space-y-3">
               {form.previous_companies.map((item, index) => (
-                <div key={`${item.company_name}-${index}`} className="rounded-md border border-slate-200 p-3 dark:border-slate-700">
+                <div key={item.id || index} className="rounded-md border border-slate-200 p-3 dark:border-slate-700">
                   <div className="mb-2 flex items-center justify-between">
                     <h3 className="text-sm font-semibold">Company #{index + 1}</h3>
                     <button type="button" className="text-xs text-red-500" onClick={() => removeArrayItem('previous_companies', index)}>Remove</button>
@@ -748,7 +958,14 @@ export default function OnboardingPage() {
                   <div className="grid gap-2 md:grid-cols-2">
                     <input className={inputClass()} placeholder="Company Name *" value={item.company_name} onChange={(e) => updateArrayItem('previous_companies', index, 'company_name', e.target.value)} />
                     <input className={inputClass()} placeholder="Designation *" value={item.designation} onChange={(e) => updateArrayItem('previous_companies', index, 'designation', e.target.value)} />
-                    <input className={inputClass()} placeholder="Duration (From - To) *" value={item.duration} onChange={(e) => updateArrayItem('previous_companies', index, 'duration', e.target.value)} />
+                    <div>
+                      <label className="form-label">Joining Date *</label>
+                      <input className={inputClass()} type="date" value={item.joining_date} onChange={(e) => updateArrayItem('previous_companies', index, 'joining_date', e.target.value)} />
+                    </div>
+                    <div>
+                      <label className="form-label">Last Working Date *</label>
+                      <input className={inputClass()} type="date" value={item.last_working_date} onChange={(e) => updateArrayItem('previous_companies', index, 'last_working_date', e.target.value)} />
+                    </div>
                     <input className={inputClass()} placeholder="Last Drawn Salary (CTC/LPA) *" value={item.last_drawn_salary} onChange={(e) => updateArrayItem('previous_companies', index, 'last_drawn_salary', e.target.value)} />
                     <textarea className={inputClass()} placeholder="Reason for Leaving *" value={item.reason_for_leaving} onChange={(e) => updateArrayItem('previous_companies', index, 'reason_for_leaving', e.target.value)} />
                   </div>
@@ -789,7 +1006,7 @@ export default function OnboardingPage() {
           </div>
 
           {form.qualifications.map((item, index) => (
-            <div key={`${item.institution}-${index}`} className="rounded-md border border-slate-200 p-3 dark:border-slate-700">
+            <div key={item.id || index} className="rounded-md border border-slate-200 p-3 dark:border-slate-700">
               <div className="mb-2 flex items-center justify-between">
                 <h3 className="text-sm font-semibold">Qualification #{index + 1}</h3>
                 {form.qualifications.length > 1 ? (
@@ -813,19 +1030,19 @@ export default function OnboardingPage() {
           <h2 className="mb-4 text-lg font-semibold">11. Skills and Professional Details</h2>
           <div className="grid gap-3 md:grid-cols-2">
             <div>
-              <input className={inputClass()} placeholder="Primary Skills *" value={form.primary_skills} onChange={(e) => setValue('primary_skills', normalizeCommaSeparated(e.target.value))} />
+              <input className={inputClass()} placeholder="Primary Skills *" value={form.primary_skills} onChange={(e) => setValue('primary_skills', e.target.value)} onBlur={(e) => setValue('primary_skills', formatCommaSeparated(e.target.value))} />
               <p className="mt-1 text-[11px] text-slate-400">Add skills separated by commas, for example: React, Node.js, SQL</p>
             </div>
             <div>
-              <input className={inputClass()} placeholder="Secondary Skills" value={form.secondary_skills} onChange={(e) => setValue('secondary_skills', normalizeCommaSeparated(e.target.value))} />
+              <input className={inputClass()} placeholder="Secondary Skills" value={form.secondary_skills} onChange={(e) => setValue('secondary_skills', e.target.value)} onBlur={(e) => setValue('secondary_skills', formatCommaSeparated(e.target.value))} />
               <p className="mt-1 text-[11px] text-slate-400">Optional, comma-separated list.</p>
             </div>
             <div>
-              <input className={inputClass()} placeholder="Tools / Technologies Known *" value={form.tools_technologies} onChange={(e) => setValue('tools_technologies', normalizeCommaSeparated(e.target.value))} />
+              <input className={inputClass()} placeholder="Tools / Technologies Known *" value={form.tools_technologies} onChange={(e) => setValue('tools_technologies', e.target.value)} onBlur={(e) => setValue('tools_technologies', formatCommaSeparated(e.target.value))} />
               <p className="mt-1 text-[11px] text-slate-400">Use commas to separate tools and technologies.</p>
             </div>
             <div>
-              <input className={inputClass()} placeholder="Certifications" value={form.certifications} onChange={(e) => setValue('certifications', normalizeCommaSeparated(e.target.value))} />
+              <input className={inputClass()} placeholder="Certifications" value={form.certifications} onChange={(e) => setValue('certifications', e.target.value)} onBlur={(e) => setValue('certifications', formatCommaSeparated(e.target.value))} />
               <p className="mt-1 text-[11px] text-slate-400">Optional, comma-separated list like AWS, PMP, Scrum Master.</p>
             </div>
           </div>
@@ -834,7 +1051,7 @@ export default function OnboardingPage() {
         <section className="card p-5 space-y-3">
           <h2 className="text-lg font-semibold">12. Projects</h2>
           {form.projects.map((item, index) => (
-            <div key={`${item.project_name}-${index}`} className="rounded-md border border-slate-200 p-3 dark:border-slate-700">
+            <div key={item.id || index} className="rounded-md border border-slate-200 p-3 dark:border-slate-700">
               <div className="mb-2 flex items-center justify-between">
                 <h3 className="text-sm font-semibold">Project #{index + 1}</h3>
                 {form.projects.length > 1 ? (
@@ -975,6 +1192,7 @@ export default function OnboardingPage() {
           </div>
         </div>
       </form>
+      )}
     </div>
   );
 }

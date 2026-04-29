@@ -16,10 +16,13 @@ Production-ready full-stack app with:
 - Employee:
   - CRUD own timeline entries
   - CRUD own expenses + receipt upload
+  - Can select only admin-assigned projects in expenses/timesheets
   - View personal dashboard and reports
 - Admin:
   - View all timeline and expense data
   - Approve/reject expenses
+  - Manage projects and assign projects to employees
+  - View project-to-employee assignment matrix
   - View team-wide analytics
 
 ### Timeline
@@ -32,7 +35,7 @@ Production-ready full-stack app with:
 
 ### Expense
 - Add/edit/delete expenses
-- Categories include: Food & Beverages, Miscellaneous, Groceries, Cab, Bus, Train, Tools or hardware, Porter Delivery for Hardware
+- Categories are multi-select checkboxes: Food & Beverages, Travel, Groceries, Tools or Hardware, Porter delivery for Hardware, Miscellaneous
 - Receipt upload (JPG/PNG, max 1MB)
 - Receipt preview
 - Pending/approved/rejected status

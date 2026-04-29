@@ -1,4 +1,5 @@
 import { calculateDurationHours } from './time';
+import { categoryShareRows } from './expenseCategories';
 
 const MINUTES_PER_DAY = 24 * 60;
 const DAY_SHIFT_START = 6 * 60;
@@ -185,7 +186,9 @@ function toInputDate(dateValue) {
 export function buildRangeSummary(timeline = [], expenses = [], startDate = '', endDate = '') {
   const timelineSummary = collectDailyTimelineRows(timeline, startDate, endDate);
   const filteredTimeline = timelineSummary.filteredTimeline;
-  const filteredExpenses = expenses.filter((entry) => isWithinRange(entry.date, startDate, endDate));
+  const filteredExpenses = expenses.filter(
+    (entry) => entry.status === 'approved' && isWithinRange(entry.date, startDate, endDate)
+  );
 
   const dailyMap = new Map(
     timelineSummary.dailyRows.map((row) => [row.date, { ...row, expenses: 0 }])
@@ -221,8 +224,9 @@ export function buildRangeSummary(timeline = [], expenses = [], startDate = '', 
     current.expenses += amount;
     dailyMap.set(dateKey, current);
 
-    const categoryName = entry.category || 'Uncategorized';
-    categoryMap.set(categoryName, (categoryMap.get(categoryName) || 0) + amount);
+    categoryShareRows(entry).forEach((row) => {
+      categoryMap.set(row.category, (categoryMap.get(row.category) || 0) + row.amount);
+    });
   });
 
   const dailyRows = Array.from(dailyMap.values())

@@ -5,10 +5,11 @@ import { useAuth } from './context/AuthContext';
 import AdminPage from './pages/AdminPage';
 import DashboardPage from './pages/DashboardPage';
 import ExpensePage from './pages/ExpensePage';
+import LeavePage from './pages/LeavePage';
 import LoginPage from './pages/LoginPage';
 import OnboardingPage from './pages/OnboardingPage';
 import ReportsPage from './pages/ReportsPage';
-import TimelinePage from './pages/TimelinePage';
+import TimesheetPage from './pages/TimesheetPage';
 
 function AppShell({ children }) {
   return <Layout>{children}</Layout>;
@@ -41,6 +42,8 @@ export default function App() {
       <Route path="/" element={<Navigate to={user ? '/dashboard' : '/login'} replace />} />
       <Route path="/login" element={user ? <Navigate to="/dashboard" /> : <LoginPage />} />
 
+      <Route path="/timeline" element={<Navigate to="/timesheet" replace />} />
+
       <Route
         path="/dashboard"
         element={
@@ -53,11 +56,11 @@ export default function App() {
       />
 
       <Route
-        path="/timeline"
+        path="/timesheet"
         element={
           <ProtectedRoute>
             <AppShell>
-              <TimelinePage />
+              <TimesheetPage />
             </AppShell>
           </ProtectedRoute>
         }
@@ -80,6 +83,17 @@ export default function App() {
           <ProtectedRoute>
             <AppShell>
               <OnboardingPage />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/leave"
+        element={
+          <ProtectedRoute>
+            <AppShell>
+              <LeavePage />
             </AppShell>
           </ProtectedRoute>
         }

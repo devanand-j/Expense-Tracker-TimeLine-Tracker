@@ -17,7 +17,17 @@ function fmt(date) {
   return `${y}-${m}-${d}`;
 }
 
-export default function DatePicker({ value, onChange, placeholder = 'Select date', required }) {
+export default function DatePicker({
+  value,
+  onChange,
+  placeholder = 'Select date',
+  required,
+  minDate,
+  maxDate,
+  disabledDates = [],
+  isDateDisabled,
+  dayToneMap = {}
+}) {
   const [open, setOpen] = useState(false);
   const selected = parseDate(value);
   const today = new Date();
@@ -44,8 +54,20 @@ export default function DatePicker({ value, onChange, placeholder = 'Select date
   const prevMonth = () => setView(new Date(year, month - 1, 1));
   const nextMonth = () => setView(new Date(year, month + 1, 1));
 
+  const disabledSet = new Set(disabledDates || []);
+
+  const isDateBlocked = (date) => {
+    const dateKey = fmt(date);
+    if (minDate && dateKey < minDate) return true;
+    if (maxDate && dateKey > maxDate) return true;
+    if (disabledSet.has(dateKey)) return true;
+    if (typeof isDateDisabled === 'function' && isDateDisabled(dateKey)) return true;
+    return false;
+  };
+
   const select = (d) => {
     const picked = new Date(year, month, d);
+    if (isDateBlocked(picked)) return;
     onChange(fmt(picked));
     setOpen(false);
   };
@@ -93,16 +115,28 @@ export default function DatePicker({ value, onChange, placeholder = 'Select date
           <div className="grid grid-cols-7 gap-y-1 text-center text-sm">
             {cells.map((d, i) => {
               if (!d) return <span key={`e-${i}`} />;
+              const cellDate = new Date(year, month, d);
+              const isBlocked = isDateBlocked(cellDate);
+              const tone = dayToneMap?.[fmt(cellDate)] || null;
               const isToday = d === today.getDate() && month === today.getMonth() && year === today.getFullYear();
               const isSelected = selected && d === selected.getDate() && month === selected.getMonth() && year === selected.getFullYear();
+              const toneClass = tone === 'green'
+                ? 'bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-900/40 dark:text-emerald-300 dark:ring-emerald-800'
+                : tone === 'red'
+                  ? 'bg-red-100 text-red-700 ring-1 ring-red-200 dark:bg-red-900/40 dark:text-red-300 dark:ring-red-800'
+                  : '';
               return (
                 <button
                   key={d}
                   type="button"
+                  disabled={isBlocked}
                   onClick={() => select(d)}
                   className={`mx-auto flex h-8 w-8 items-center justify-center rounded-full text-sm font-medium transition
                     ${isSelected ? 'bg-teal text-white shadow-md shadow-teal/30' : ''}
                     ${isToday && !isSelected ? 'border border-teal text-teal' : ''}
+                    ${toneClass}
+                    ${isBlocked ? 'cursor-not-allowed hover:bg-transparent' : ''}
+                    ${isBlocked && tone !== 'red' ? 'text-slate-300 line-through dark:text-slate-600' : ''}
                     ${!isSelected && !isToday ? 'text-slate-700 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-700' : ''}
                   `}
                 >
@@ -115,8 +149,9 @@ export default function DatePicker({ value, onChange, placeholder = 'Select date
           {/* Today shortcut */}
           <button
             type="button"
+            disabled={isDateBlocked(today)}
             onClick={() => { onChange(fmt(today)); setOpen(false); }}
-            className="mt-3 w-full rounded-xl bg-teal/10 py-1.5 text-xs font-semibold text-teal transition hover:bg-teal/20 dark:bg-teal/20"
+            className="mt-3 w-full rounded-xl bg-teal/10 py-1.5 text-xs font-semibold text-teal transition hover:bg-teal/20 disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400 dark:bg-teal/20 dark:disabled:bg-slate-700 dark:disabled:text-slate-500"
           >
             Today
           </button>

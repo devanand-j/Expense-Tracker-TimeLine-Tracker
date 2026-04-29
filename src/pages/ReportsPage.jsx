@@ -3,6 +3,7 @@ import toast from 'react-hot-toast';
 import * as XLSX from 'xlsx-js-style';
 import { useAuth } from '../context/AuthContext';
 import { exportReportAsPdfAndUpload, exportReportAsXlsxAndUpload, exportWorkbookAsXlsxAndUpload } from '../lib/export';
+import { categoryShareRows } from '../lib/expenseCategories';
 import { buildAllStaffTimesheet, buildRangeSummary, formatHoursAsLabel } from '../lib/reporting';
 import { supabase } from '../lib/supabaseClient';
 import { calculateDurationHours } from '../lib/time';
@@ -414,6 +415,7 @@ export default function ReportsPage() {
   }), [timeline, selectedEmployeeId, selectedProject]);
 
   const filteredExpenses = useMemo(() => expenses.filter((entry) => {
+    if (entry.status !== 'approved') return false;
     if (selectedEmployeeId !== 'all' && entry.user_id !== selectedEmployeeId) return false;
     if (selectedProject !== 'all' && entry.project !== selectedProject) return false;
     return true;
@@ -433,7 +435,9 @@ export default function ReportsPage() {
     const totalExpenses = monthlyExpenses.reduce((sum, item) => sum + Number(item.amount), 0);
 
     const byCategory = monthlyExpenses.reduce((acc, item) => {
-      acc[item.category] = (acc[item.category] || 0) + Number(item.amount);
+      categoryShareRows(item).forEach((row) => {
+        acc[row.category] = (acc[row.category] || 0) + row.amount;
+      });
       return acc;
     }, {});
 
@@ -513,13 +517,13 @@ export default function ReportsPage() {
         `Employee: ${employeeLabel}`,
         `Project: ${projectLabel}`,
         `Total Working Hours: ${rangeSummary.totalHours}`,
-        `Total Expenses: ₹${rangeSummary.totalExpenses}`,
+        `Total Approved Expenses: ₹${rangeSummary.totalExpenses}`,
         'Daily Totals:',
         ...rangeSummary.dailyRows.map((row) => `  ${row.date} (${row.projectLabel || '-'}): ${row.workingHours}h, ₹${row.expenses}`),
         'Category Totals:',
         ...rangeSummary.categoryRows.map((row) => `  ${row.category}: ₹${row.amount}`),
         `Monthly Hours: ${monthlyReport.totalHours}`,
-        `Monthly Expenses: ₹${monthlyReport.totalExpenses}`,
+        `Monthly Approved Expenses: ₹${monthlyReport.totalExpenses}`,
         `Approval Status Breakdown: ${JSON.stringify(monthlyReport.byStatus)}`
       ];
 
@@ -716,7 +720,7 @@ export default function ReportsPage() {
           <p className="mt-2 text-2xl font-bold">{combinedTotals.totalHours}h</p>
         </div>
         <div className="card p-4">
-          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Selected Expenses</p>
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Selected Approved Expenses</p>
           <p className="mt-2 text-2xl font-bold">₹{combinedTotals.totalExpenses}</p>
         </div>
         <div className="card p-4">
@@ -724,14 +728,14 @@ export default function ReportsPage() {
           <p className="mt-2 text-2xl font-bold">{monthlyReport.totalHours}h</p>
         </div>
         <div className="card p-4">
-          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Monthly Expenses</p>
+          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Monthly Approved Expenses</p>
           <p className="mt-2 text-2xl font-bold">₹{monthlyReport.totalExpenses}</p>
         </div>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="card overflow-x-auto p-4">
-          <h2 className="mb-3 font-semibold">Daily Hours and Expenses</h2>
+          <h2 className="mb-3 font-semibold">Daily Hours and Approved Expenses</h2>
           <table className="w-full min-w-[1100px] text-sm">
             <thead>
               <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
@@ -770,7 +774,7 @@ export default function ReportsPage() {
         </div>
 
         <div className="card overflow-x-auto p-4">
-          <h2 className="mb-3 font-semibold">Expense Totals by Category</h2>
+          <h2 className="mb-3 font-semibold">Approved Expense Totals by Category</h2>
           <table className="w-full min-w-[420px] text-sm">
             <thead>
               <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
@@ -796,7 +800,7 @@ export default function ReportsPage() {
       </div>
 
       <div className="card overflow-x-auto p-4">
-        <h2 className="mb-3 font-semibold">Project-wise Hours and Expenses</h2>
+        <h2 className="mb-3 font-semibold">Project-wise Hours and Approved Expenses</h2>
         <table className="w-full min-w-[420px] text-sm">
           <thead>
             <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
