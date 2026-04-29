@@ -42,6 +42,19 @@ const STATUS_STYLES = {
   rejected: 'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400'
 };
 
+const CUSTOM_PROJECTS_KEY = 'vseek_custom_projects';
+
+function loadCustomProjects() {
+  try { return JSON.parse(localStorage.getItem(CUSTOM_PROJECTS_KEY) || '[]'); } catch { return []; }
+}
+
+function saveCustomProject(name) {
+  const existing = loadCustomProjects();
+  if (!existing.includes(name)) {
+    localStorage.setItem(CUSTOM_PROJECTS_KEY, JSON.stringify([...existing, name]));
+  }
+}
+
 const defaultForm = {
   id: null,
   date: '',
@@ -119,6 +132,9 @@ export default function ExpensePage() {
   const [form, setForm] = useState(defaultForm);
   const [filters, setFilters] = useState({ category: '', project: '', from: '', to: '' });
   const [availableProjects, setAvailableProjects] = useState([]);
+  const [customProjects, setCustomProjects] = useState(loadCustomProjects);
+  const [isOtherProject, setIsOtherProject] = useState(false);
+  const [otherProjectInput, setOtherProjectInput] = useState('');
   const [offsiteDates, setOffsiteDates] = useState([]);
   const [approvedTimesheetDays, setApprovedTimesheetDays] = useState([]);
   const [approvedLeaveDays, setApprovedLeaveDays] = useState([]);
@@ -258,7 +274,7 @@ export default function ExpensePage() {
 
     if (!form.date) return toast.error('Date is required.');
     if (!form.project) return toast.error('Project is required.');
-    if (!isAdmin && !availableProjects.includes(form.project)) return toast.error('Selected project is not assigned to you.');
+    if (!isAdmin && !availableProjects.includes(form.project) && !customProjects.includes(form.project)) return toast.error('Selected project is not assigned to you.');
     if (!form.categories.length) return toast.error('Select at least one category.');
 
     const blockedReason = getExpenseDateBlockReason(form.date, form.categories);
@@ -289,8 +305,14 @@ export default function ExpensePage() {
     setSaving(false);
 
     if (error) return toast.error(error.message);
+    if (isOtherProject && form.project) {
+      saveCustomProject(form.project);
+      setCustomProjects(loadCustomProjects());
+    }
     toast.success(submitMode === 'draft' ? 'Expense saved as draft' : (form.id ? 'Expense submitted' : 'Expense submitted'));
     setForm(defaultForm);
+    setIsOtherProject(false);
+    setOtherProjectInput('');
     setOpen(false);
     void fetchExpenses();
   };
@@ -315,6 +337,8 @@ export default function ExpensePage() {
       ? maxExpenseDate
       : (!isAdmin ? (sortedAllowedDates[0] || '') : '');
 
+    setIsOtherProject(false);
+    setOtherProjectInput('');
     setForm({
       ...defaultForm,
       date: defaultDate,
@@ -326,6 +350,10 @@ export default function ExpensePage() {
 
   const openEdit = (entry) => {
     if (!canModifyExpense(entry)) return toast.error('Approved expenses cannot be edited.');
+    const allKnown = [...availableProjects, ...customProjects];
+    const isCustom = entry.project && !allKnown.includes(entry.project);
+    setIsOtherProject(isCustom);
+    setOtherProjectInput(isCustom ? entry.project : '');
     setForm({
       ...defaultForm,
       ...entry,
@@ -444,11 +472,44 @@ export default function ExpensePage() {
 
           <div>
             <label className="form-label">Project <span className="text-red-500">*</span></label>
-            <select className="field dark:border-slate-600 dark:bg-slate-700 dark:text-white" value={form.project} onChange={(e) => setForm((x) => ({ ...x, project: e.target.value }))} required>
+            <select
+              className="field dark:border-slate-600 dark:bg-slate-700 dark:text-white"
+              value={isOtherProject ? '__other__' : form.project}
+              onChange={(e) => {
+                if (e.target.value === '__other__') {
+                  setIsOtherProject(true);
+                  setOtherProjectInput('');
+                  setForm((x) => ({ ...x, project: '' }));
+                } else {
+                  setIsOtherProject(false);
+                  setOtherProjectInput('');
+                  setForm((x) => ({ ...x, project: e.target.value }));
+                }
+              }}
+              required={!isOtherProject}
+            >
               <option value="">Select Project</option>
-              {availableProjects.map((projectName) => <option key={projectName} value={projectName}>{projectName}</option>)}
+              {availableProjects.map((p) => <option key={p} value={p}>{p}</option>)}
+              {customProjects.filter((p) => !availableProjects.includes(p)).map((p) => (
+                <option key={p} value={p}>⭐ {p}</option>
+              ))}
+              <option value="__other__">+ Others (type your own)</option>
             </select>
-            {!availableProjects.length ? <p className="mt-1 text-xs text-amber-600 dark:text-amber-300">No projects assigned. Ask admin to assign a project before adding expense.</p> : null}
+            {isOtherProject && (
+              <input
+                className="field mt-2 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
+                type="text"
+                placeholder="Enter project name"
+                value={otherProjectInput}
+                onChange={(e) => {
+                  setOtherProjectInput(e.target.value);
+                  setForm((x) => ({ ...x, project: e.target.value.trim() }));
+                }}
+                required
+                autoFocus
+              />
+            )}
+            {!availableProjects.length && !customProjects.length ? <p className="mt-1 text-xs text-amber-600 dark:text-amber-300">No projects assigned. Ask admin to assign a project before adding expense.</p> : null}
           </div>
 
           <div>

@@ -59,13 +59,13 @@ function buildMonthCalendar(dateValue) {
 }
 
 function dayCellTone({ hours, approvedExpense, isLeave, pendingCount }) {
-  if (isLeave) return 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300';
-  if (pendingCount > 0) return 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300';
-  if (approvedExpense > 0 && hours > 0) return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300';
-  if (hours >= 8) return 'bg-teal-100 text-teal-700 dark:bg-teal-900/30 dark:text-teal-300';
-  if (hours > 0) return 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300';
-  if (approvedExpense > 0) return 'bg-lime-100 text-lime-700 dark:bg-lime-900/30 dark:text-lime-300';
-  return 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300';
+  if (isLeave) return 'bg-violet-100 text-violet-800 dark:bg-violet-700/60 dark:text-violet-100';
+  if (pendingCount > 0) return 'bg-amber-100 text-amber-800 dark:bg-amber-600/60 dark:text-amber-100';
+  if (approvedExpense > 0 && hours > 0) return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-600/60 dark:text-emerald-100';
+  if (hours >= 8) return 'bg-teal-100 text-teal-800 dark:bg-teal-600/60 dark:text-teal-100';
+  if (hours > 0) return 'bg-sky-100 text-sky-800 dark:bg-sky-600/60 dark:text-sky-100';
+  if (approvedExpense > 0) return 'bg-lime-100 text-lime-800 dark:bg-lime-600/60 dark:text-lime-100';
+  return 'bg-slate-100 text-slate-600 dark:bg-slate-700/50 dark:text-slate-300';
 }
 
 function isMissingSchemaTable(error, tableName) {
@@ -327,11 +327,11 @@ export default function DashboardPage() {
         {/* Legend */}
         <div className="mb-4 flex flex-wrap gap-3 text-xs">
           {[
-            { color: 'bg-teal-100 dark:bg-teal-900/30', label: '8h+ worked' },
-            { color: 'bg-sky-100 dark:bg-sky-900/30', label: 'Partial hours' },
-            { color: 'bg-emerald-100 dark:bg-emerald-900/30', label: 'Hours + expense' },
-            { color: 'bg-violet-100 dark:bg-violet-900/30', label: 'Leave' },
-            { color: 'bg-amber-100 dark:bg-amber-900/30', label: 'Pending' },
+            { color: 'bg-teal-100 dark:bg-teal-600/60', label: '8h+ worked' },
+            { color: 'bg-sky-100 dark:bg-sky-600/60', label: 'Partial hours' },
+            { color: 'bg-emerald-100 dark:bg-emerald-600/60', label: 'Hours + expense' },
+            { color: 'bg-violet-100 dark:bg-violet-700/60', label: 'Leave' },
+            { color: 'bg-amber-100 dark:bg-amber-600/60', label: 'Pending' },
           ].map((l) => (
             <div key={l.label} className="flex items-center gap-1.5">
               <span className={`h-3 w-3 rounded ${l.color}`} />
@@ -362,8 +362,8 @@ export default function DashboardPage() {
                   <div className="mt-0.5 opacity-80">{cell.hours > 0 ? `${cell.hours}h` : ''}</div>
                   <div className="opacity-80">{cell.approvedExpense > 0 ? `₹${cell.approvedExpense}` : ''}</div>
                   <div className="mt-1 flex flex-wrap gap-0.5">
-                    {cell.isLeave ? <span className="rounded bg-violet-200/80 px-1 py-0.5 text-[9px] font-bold dark:bg-violet-800/50">L</span> : null}
-                    {cell.pendingCount > 0 ? <span className="rounded bg-amber-200/80 px-1 py-0.5 text-[9px] font-bold dark:bg-amber-800/50">P{cell.pendingCount}</span> : null}
+                    {cell.isLeave ? <span className="rounded bg-violet-300/80 px-1 py-0.5 text-[9px] font-bold dark:bg-violet-500/60 dark:text-white">L</span> : null}
+                    {cell.pendingCount > 0 ? <span className="rounded bg-amber-300/80 px-1 py-0.5 text-[9px] font-bold dark:bg-amber-500/60 dark:text-white">P{cell.pendingCount}</span> : null}
                   </div>
                 </>
               )}

@@ -31,7 +31,7 @@ export default function LoginPage() {
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
             </svg>
           </div>
-          <span className="text-lg font-bold tracking-tight">Team Tracker</span>
+          <span className="text-lg font-bold tracking-tight">VSeek Team Tracker</span>
         </div>
 
         <div>
@@ -57,7 +57,7 @@ export default function LoginPage() {
           </div>
         </div>
 
-        <p className="text-sm text-white/50">© {new Date().getFullYear()} Team Tracker. All rights reserved.</p>
+        <p className="text-sm text-white/50">© {new Date().getFullYear()} VSeek Team Tracker. All rights reserved.</p>
       </div>
 
       {/* Right panel — login */}
@@ -70,7 +70,7 @@ export default function LoginPage() {
                 <path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
               </svg>
             </div>
-            <span className="text-xl font-bold text-slate-900 dark:text-white">Team Tracker</span>
+            <span className="text-xl font-bold text-slate-900 dark:text-white">VSeek Team Tracker</span>
           </div>
 
           <div className="rounded-3xl border border-slate-200 bg-white p-8 shadow-card-lg dark:border-slate-700 dark:bg-slate-800">

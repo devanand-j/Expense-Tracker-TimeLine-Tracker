@@ -105,7 +105,7 @@ set category = 'Porter delivery for Hardware'
 where category = 'Porter Delivery for Hardware';
 
 insert into public.projects (name, created_by)
-select distinct src.project_name, null
+select distinct src.project_name, null::uuid
 from (
   select trim(project) as project_name from public.expenses
   union
@@ -115,7 +115,7 @@ where coalesce(src.project_name, '') <> ''
 on conflict (name) do nothing;
 
 insert into public.employee_project_assignments (user_id, project_id, assigned_by)
-select distinct src.user_id, p.id, null
+select distinct src.user_id, p.id, null::uuid
 from (
   select user_id, trim(project) as project_name from public.expenses
   union
@@ -958,7 +958,8 @@ as $$
       'ankit.k@vseek.in',
       'sagar.s@vseek.in',
       'dinesh.b@vseek.in',
-      'rajesh.b@vseek.in'
+      'rajesh.b@vseek.in',
+      'sunil.g@vseek.in'
     ]
   );
 $$;

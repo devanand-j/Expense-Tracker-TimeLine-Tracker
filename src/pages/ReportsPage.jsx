@@ -354,6 +354,7 @@ export default function ReportsPage() {
   const [expenses, setExpenses] = useState([]);
   const [profiles, setProfiles] = useState([]);
   const [downloads, setDownloads] = useState([]);
+  const [dbProjects, setDbProjects] = useState([]);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('all');
   const [selectedProject, setSelectedProject] = useState('all');
   const [allStaffExportFormat, setAllStaffExportFormat] = useState('excel');
@@ -377,10 +378,13 @@ export default function ReportsPage() {
         ? supabase.from('profiles').select('id, name').order('name', { ascending: true })
         : Promise.resolve({ data: [{ id: user.id, name: 'Me' }], error: null });
 
-      const [timelineRes, expenseRes, profileRes] = await Promise.all([
+      const projectQuery = supabase.from('projects').select('name').eq('is_active', true).order('name', { ascending: true });
+
+      const [timelineRes, expenseRes, profileRes, projectRes] = await Promise.all([
         timelineQuery,
         expenseQuery,
-        profileQuery
+        profileQuery,
+        projectQuery
       ]);
 
       if (timelineRes.error) { toast.error(timelineRes.error.message); return; }
@@ -390,6 +394,7 @@ export default function ReportsPage() {
       setTimeline(timelineRes.data || []);
       setExpenses(expenseRes.data || []);
       setProfiles(profileRes.data || []);
+      setDbProjects((projectRes.data || []).map((p) => p.name));
 
       if (profile?.role !== 'admin') {
         setSelectedEmployeeId(user.id);
@@ -400,13 +405,12 @@ export default function ReportsPage() {
   }, [user.id, profile?.role]);
 
   const projectOptions = useMemo(() => {
-    const base = ['HumanArchive', 'CPRT'];
     const dynamic = [
-      ...timeline.map((entry) => entry.project).filter(Boolean),
-      ...expenses.map((entry) => entry.project).filter(Boolean)
+      ...timeline.map((e) => e.project).filter(Boolean),
+      ...expenses.map((e) => e.project).filter(Boolean)
     ];
-    return ['all', ...new Set([...base, ...dynamic])];
-  }, [timeline, expenses]);
+    return ['all', ...new Set([...dbProjects, ...dynamic])];
+  }, [timeline, expenses, dbProjects]);
 
   const filteredTimeline = useMemo(() => timeline.filter((entry) => {
     if (selectedEmployeeId !== 'all' && entry.user_id !== selectedEmployeeId) return false;

@@ -10,6 +10,17 @@ import { supabase } from '../lib/supabaseClient';
 import { calculateDurationHours } from '../lib/time';
 
 const PIE_COLORS = ['#04AA6D', '#0ea5e9', '#f59e0b', '#ef4444', '#8b5cf6', '#14b8a6'];
+const CUSTOM_PROJECTS_KEY = 'vseek_custom_projects';
+
+function loadCustomProjects() {
+  try { return JSON.parse(localStorage.getItem(CUSTOM_PROJECTS_KEY) || '[]'); } catch { return []; }
+}
+
+function removeCustomProject(name) {
+  const existing = loadCustomProjects();
+  const filtered = existing.filter((p) => p !== name);
+  localStorage.setItem(CUSTOM_PROJECTS_KEY, JSON.stringify(filtered));
+}
 
 function inCurrentWeek(dateStr) {
   const now = new Date();
@@ -107,8 +118,11 @@ export default function AdminPage() {
   const [leaveComment, setLeaveComment] = useState('');
   const [historyPreview, setHistoryPreview] = useState(null);
   const [receiptPreview, setReceiptPreview] = useState(null);
+  const [reimbursementAction, setReimbursementAction] = useState(null);
+  const [reimbursementForm, setReimbursementForm] = useState({ payment_mode: 'bank_transfer', transaction_reference: '' });
+  const [unrecognizedProjects, setUnrecognizedProjects] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [adminTab, setAdminTab] = useState('employee'); // 'employee' | 'team'
+  const [adminTab, setAdminTab] = useState('employee'); // 'employee' | 'team' | 'projects'
   const [bulkSelected, setBulkSelected] = useState(new Set());
   const [bulkApproving, setBulkApproving] = useState(false);
   const [rangeStart, setRangeStart] = useState(() => {
@@ -227,6 +241,33 @@ export default function AdminPage() {
 
     setProjects(projectRes.data || []);
     setProjectAssignments(assignmentRes.data || []);
+
+    // Load unrecognized projects from localStorage
+    const customProjects = loadCustomProjects();
+    const officialProjectNames = new Set((projectRes.data || []).map((p) => p.name));
+    const unrecognized = customProjects.filter((name) => !officialProjectNames.has(name));
+    setUnrecognizedProjects(unrecognized);
+  }
+
+  async function promoteProjectToOfficial(projectName) {
+    const name = String(projectName || '').trim();
+    if (!name) {
+      toast.error('Project name is required');
+      return;
+    }
+
+    const { error } = await supabase
+      .from('projects')
+      .insert({ name, is_active: true, created_by: user?.id || null });
+
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+
+    removeCustomProject(projectName);
+    toast.success(`"${projectName}" promoted to official project`);
+    await loadProjectData();
   }
 
   async function addProject() {
@@ -861,26 +902,21 @@ export default function AdminPage() {
     loadEmployeeData(selectedEmployeeId);
   };
 
-  const markReimbursementPaid = async (entry) => {
-    const paymentMode = window.prompt('Payment mode (bank_transfer/cash/upi)', entry.payment_mode || 'bank_transfer');
-    if (!paymentMode) return;
-    const reference = window.prompt('Transaction reference (optional)', entry.transaction_reference || '') || null;
+  const markReimbursementPaid = async () => {
+    if (!reimbursementAction) return;
     const { error } = await supabase
       .from('reimbursement_ledger')
       .update({
         payment_status: 'paid',
         paid_date: toInputDate(new Date()),
-        payment_mode: paymentMode,
-        transaction_reference: reference
+        payment_mode: reimbursementForm.payment_mode,
+        transaction_reference: reimbursementForm.transaction_reference || null
       })
-      .eq('id', entry.id);
-
-    if (error) {
-      toast.error(error.message);
-      return;
-    }
-
+      .eq('id', reimbursementAction.id);
+    if (error) { toast.error(error.message); return; }
     toast.success('Reimbursement marked as paid');
+    setReimbursementAction(null);
+    setReimbursementForm({ payment_mode: 'bank_transfer', transaction_reference: '' });
     loadEmployeeData(selectedEmployeeId);
   };
 
@@ -958,7 +994,7 @@ export default function AdminPage() {
 
       {/* Tab switcher */}
       <div className="flex gap-2">
-        {['employee', 'team'].map((tab) => (
+        {['employee', 'team', 'projects'].map((tab) => (
           <button
             key={tab}
             type="button"
@@ -969,7 +1005,7 @@ export default function AdminPage() {
                 : 'border-[#dddddd] bg-white text-slate-700 hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200'
             }`}
           >
-            {tab === 'employee' ? 'Employee View' : 'Team View'}
+            {tab === 'employee' ? 'Employee View' : tab === 'team' ? 'Team View' : 'Projects'}
           </button>
         ))}
       </div>
@@ -1051,7 +1087,92 @@ export default function AdminPage() {
         </div>
       ) : null}
 
-      {adminTab !== 'employee' ? null : (<>
+      
+      {adminTab === 'projects' ? (
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="card p-4">
+            <h2 className="text-lg font-semibold">Project Master</h2>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Add and manage active projects.</p>
+            <div className="mt-3 flex gap-2">
+              <input type="text" value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addProject()} placeholder="Enter project name" className="w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]" />
+              <button type="button" className="btn-primary" onClick={addProject}>Add</button>
+            </div>
+            <div className="mt-4 space-y-2">
+              {projects.map((project) => (
+                <div key={project.id} className="flex items-center justify-between rounded-lg border border-[#dddddd] px-3 py-2 text-sm dark:border-[#444]">
+                  <div>
+                    <p className="font-semibold">{project.name}</p>
+                    <p className="text-xs text-slate-500">{project.is_active ? 'Active' : 'Archived'}</p>
+                  </div>
+                  <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => toggleProjectActive(project)}>{project.is_active ? 'Archive' : 'Activate'}</button>
+                </div>
+              ))}
+              {!projects.length ? <p className="text-sm text-slate-500">No projects yet.</p> : null}
+            </div>
+          </div>
+
+          <div className="card p-4">
+            <h2 className="text-lg font-semibold">Assign Projects to Employee</h2>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Only assigned projects appear in expenses and timesheets.</p>
+            <div className="mt-3">
+              <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">Select Employee</label>
+              <select className="mt-1 w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]" value={selectedEmployeeId} onChange={(e) => setSelectedEmployeeId(e.target.value)}>
+                {employees.map((emp) => <option key={emp.id} value={emp.id}>{emp.name}</option>)}
+              </select>
+            </div>
+            <div className="mt-3 grid gap-2 sm:grid-cols-2">
+              {activeProjects.map((project) => (
+                <label key={project.id} className="flex cursor-pointer items-center gap-2 rounded-lg border border-[#dddddd] px-3 py-2 text-sm hover:border-teal/40 dark:border-[#444]">
+                  <input type="checkbox" checked={selectedProjectIds.includes(project.id)} onChange={(e) => { const checked = e.target.checked; setSelectedProjectIds((cur) => { const next = new Set(cur); if (checked) next.add(project.id); else next.delete(project.id); return [...next]; }); }} />
+                  <span>{project.name}</span>
+                </label>
+              ))}
+            </div>
+            <div className="mt-4 flex justify-end">
+              <button type="button" className="btn-primary" onClick={saveProjectAssignments}>Save Assignments</button>
+            </div>
+          </div>
+
+          <div className="card overflow-x-auto p-4 lg:col-span-2">
+            <h2 className="mb-3 font-semibold">Project Allocation</h2>
+            <table className="w-full min-w-[500px] text-sm">
+              <thead><tr className="border-b border-[#dddddd] text-left dark:border-[#444]"><th className="py-2">Project</th><th>Status</th><th>Assigned Employees</th></tr></thead>
+              <tbody>
+                {projectEmployeeMatrix.map((row) => (
+                  <tr key={row.project.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
+                    <td className="py-2 font-semibold">{row.project.name}</td>
+                    <td>{row.project.is_active ? <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">Active</span> : <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-500 dark:bg-slate-700">Archived</span>}</td>
+                    <td>{row.employees.length ? row.employees.join(', ') : <span className="text-slate-400">No assignments</span>}</td>
+                  </tr>
+                ))}
+                {!projectEmployeeMatrix.length ? <tr><td colSpan={3} className="py-3 text-slate-500">No projects yet.</td></tr> : null}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="card p-4 lg:col-span-2">
+            <h2 className="text-lg font-semibold">Unrecognized Projects</h2>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">These projects were entered by employees but don't exist in the official project list. Promote them to make them official.</p>
+            {unrecognizedProjects.length > 0 ? (
+              <div className="mt-4 space-y-2">
+                {unrecognizedProjects.map((projectName) => (
+                  <div key={projectName} className="flex items-center justify-between rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm dark:border-amber-900/40 dark:bg-amber-900/20">
+                    <div>
+                      <p className="font-semibold text-amber-900 dark:text-amber-100">{projectName}</p>
+                      <p className="text-xs text-amber-700 dark:text-amber-200">Used by employees but not official</p>
+                    </div>
+                    <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => promoteProjectToOfficial(projectName)}>Promote</button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-4 text-sm text-slate-500 dark:text-slate-400">All projects are recognized. ✓</p>
+            )}
+          </div>
+        </div>
+      ) : null}
+
+{adminTab !== 'employee' ? null : (<>
 
       <div className="card p-4">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -1065,98 +1186,34 @@ export default function AdminPage() {
         </div>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <div className="card p-4">
-          <h2 className="text-lg font-semibold">Project Master</h2>
-          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Add and manage active projects available for employee assignment.</p>
+      <div className="card p-4">
+        <h2 className="text-lg font-semibold">Assign Projects</h2>
+        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Manage which projects this employee can see and use in expenses and timesheets.</p>
 
-          <div className="mt-3 flex gap-2">
-            <input
-              type="text"
-              value={newProjectName}
-              onChange={(event) => setNewProjectName(event.target.value)}
-              placeholder="Enter project name"
-              className="w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]"
-            />
-            <button type="button" className="btn-primary" onClick={addProject}>Add</button>
-          </div>
-
-          <div className="mt-4 space-y-2">
-            {projects.map((project) => (
-              <div key={project.id} className="flex items-center justify-between rounded-lg border border-[#dddddd] px-3 py-2 text-sm dark:border-[#444]">
-                <div>
-                  <p className="font-semibold">{project.name}</p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">{project.is_active ? 'Active' : 'Archived'}</p>
-                </div>
-                <button
-                  type="button"
-                  className="btn-secondary px-3 py-1 text-xs"
-                  onClick={() => toggleProjectActive(project)}
-                >
-                  {project.is_active ? 'Archive' : 'Activate'}
-                </button>
-              </div>
-            ))}
-            {!projects.length ? <p className="text-sm text-slate-500">No projects yet.</p> : null}
-          </div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {activeProjects.map((project) => (
+            <label key={project.id} className="flex items-center gap-2 rounded-lg border border-[#dddddd] px-3 py-2 text-sm dark:border-[#444]">
+              <input
+                type="checkbox"
+                checked={selectedProjectIds.includes(project.id)}
+                onChange={(event) => {
+                  const checked = event.target.checked;
+                  setSelectedProjectIds((current) => {
+                    const next = new Set(current);
+                    if (checked) next.add(project.id);
+                    else next.delete(project.id);
+                    return [...next];
+                  });
+                }}
+              />
+              <span>{project.name}</span>
+            </label>
+          ))}
         </div>
 
-        <div className="card p-4">
-          <h2 className="text-lg font-semibold">Assign Projects</h2>
-          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Only assigned projects will be selectable for this employee in expenses and timesheets.</p>
-
-          <div className="mt-3 grid gap-2 sm:grid-cols-2">
-            {activeProjects.map((project) => (
-              <label key={project.id} className="flex items-center gap-2 rounded-lg border border-[#dddddd] px-3 py-2 text-sm dark:border-[#444]">
-                <input
-                  type="checkbox"
-                  checked={selectedProjectIds.includes(project.id)}
-                  onChange={(event) => {
-                    const checked = event.target.checked;
-                    setSelectedProjectIds((current) => {
-                      const next = new Set(current);
-                      if (checked) next.add(project.id);
-                      else next.delete(project.id);
-                      return [...next];
-                    });
-                  }}
-                />
-                <span>{project.name}</span>
-              </label>
-            ))}
-          </div>
-
-          <div className="mt-4 flex justify-end">
-            <button type="button" className="btn-primary" onClick={saveProjectAssignments}>Save Assignments</button>
-          </div>
+        <div className="mt-4 flex justify-end">
+          <button type="button" className="btn-primary" onClick={saveProjectAssignments}>Save Assignments</button>
         </div>
-      </div>
-
-      <div className="card overflow-x-auto p-4">
-        <h2 className="font-semibold">Project Allocation (Who Works Where)</h2>
-        <table className="mt-3 w-full min-w-[680px] text-sm">
-          <thead>
-            <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
-              <th className="py-2">Project</th>
-              <th>Status</th>
-              <th>Assigned Employees</th>
-            </tr>
-          </thead>
-          <tbody>
-            {projectEmployeeMatrix.map((row) => (
-              <tr key={row.project.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
-                <td className="py-2 font-semibold">{row.project.name}</td>
-                <td>{row.project.is_active ? 'Active' : 'Archived'}</td>
-                <td>{row.employees.length ? row.employees.join(', ') : 'No assignments'}</td>
-              </tr>
-            ))}
-            {!projectEmployeeMatrix.length ? (
-              <tr>
-                <td className="py-3 text-slate-500" colSpan={3}>No projects available yet.</td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -1503,7 +1560,23 @@ export default function AdminPage() {
 
       <div className="card overflow-x-auto p-4 w-full">
         <h2 className="mb-3 font-semibold">Timelines for {selectedEmployee?.name}</h2>
-        <table className="w-full min-w-[900px] text-sm">
+        <div className="space-y-3 md:hidden">
+          {timeline.map((entry) => (
+            <div key={entry.id} className="rounded-xl border border-[#dddddd] p-3 text-sm dark:border-[#444]">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="font-semibold">{entry.date}</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">{entry.start_time?.slice(0, 5)} - {entry.end_time?.slice(0, 5)}</p>
+                </div>
+                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{entry.type}</span>
+              </div>
+              <p className="mt-2 font-semibold">{Number(entry.duration || calculateDurationHours(entry.start_time, entry.end_time)).toFixed(2)}h</p>
+              {entry.description ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{entry.description}</p> : null}
+            </div>
+          ))}
+          {!timeline.length ? <p className="text-sm text-slate-500">No timeline entries for this employee.</p> : null}
+        </div>
+        <table className="hidden w-full min-w-[900px] text-sm md:table">
           <thead>
             <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
               <th className="py-2">Date</th>
@@ -1542,7 +1615,30 @@ export default function AdminPage() {
           </span>
         </div>
 
-        <table className="w-full min-w-[1100px] text-sm">
+        <div className="space-y-3 md:hidden">
+          {leaveRequests.map((request) => (
+            <div key={request.id} className="rounded-xl border border-[#dddddd] p-3 text-sm dark:border-[#444]">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="font-semibold">{request.leave_type}</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">{request.start_date} to {request.end_date}</p>
+                </div>
+                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{request.status}</span>
+              </div>
+              <p className="mt-2 font-semibold">{request.subject}</p>
+              {request.content ? <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{request.content}</p> : null}
+              {request.approval_comment ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Comment: {request.approval_comment}</p> : null}
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => openLeaveAction(request, 'approved')} disabled={request.status === 'approved'}>Approve</button>
+                <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => openLeaveAction(request, 'rejected')} disabled={request.status === 'rejected'}>Reject</button>
+                <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => setHistoryPreview(request)}>History</button>
+              </div>
+            </div>
+          ))}
+          {!leaveRequests.length ? <p className="text-sm text-slate-500">No leave requests for this employee.</p> : null}
+        </div>
+
+        <table className="hidden w-full min-w-[1100px] text-sm md:table">
           <thead>
             <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
               <th className="py-2">Type</th>
@@ -1604,7 +1700,44 @@ export default function AdminPage() {
           </div>
         </div>
 
-        <table className="w-full min-w-[1100px] text-sm">
+        <div className="space-y-3 md:hidden">
+          {weeklySheets.map((sheet) => (
+            <div key={sheet.id} className="rounded-xl border border-[#dddddd] p-3 text-sm dark:border-[#444]">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="font-semibold">{sheet.week_start} to {sheet.week_end}</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">{Number(sheet.total_hours || 0).toFixed(2)}h</p>
+                </div>
+                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{sheet.status}</span>
+              </div>
+              {sheet.approval_comment ? <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">{sheet.approval_comment}</p> : null}
+              {normalizeConflictFlags(sheet.conflict_flags).length ? (
+                <p className="mt-1 text-xs font-semibold text-red-600 dark:text-red-300">Conflicts: {normalizeConflictFlags(sheet.conflict_flags).join(', ')}</p>
+              ) : null}
+              <div className="mt-3 flex flex-wrap gap-2">
+                <label className="flex items-center gap-2 text-xs">
+                  <input
+                    type="checkbox"
+                    disabled={sheet.status === 'approved'}
+                    checked={bulkSelected.has(sheet.id)}
+                    onChange={(e) => setBulkSelected((prev) => {
+                      const next = new Set(prev);
+                      if (e.target.checked) next.add(sheet.id); else next.delete(sheet.id);
+                      return next;
+                    })}
+                  />
+                  <span>Select</span>
+                </label>
+                <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => openTimesheetAction(sheet, 'approved')} disabled={sheet.status === 'approved'}>Approve</button>
+                <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => openTimesheetAction(sheet, 'needs_changes')} disabled={sheet.status === 'needs_changes'}>Need Changes</button>
+                <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => setHistoryPreview(sheet)}>History</button>
+              </div>
+            </div>
+          ))}
+          {!weeklySheets.length ? <p className="text-sm text-slate-500">No weekly timesheets for this employee.</p> : null}
+        </div>
+
+        <table className="hidden w-full min-w-[1100px] text-sm md:table">
           <thead>
             <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
               <th className="py-2 pr-2">
@@ -1679,7 +1812,35 @@ export default function AdminPage() {
           </span>
         </div>
 
-        <table className="w-full min-w-[980px] text-sm">
+        <div className="space-y-3 md:hidden">
+          {reimbursements.map((entry) => (
+            <div key={entry.id} className="rounded-xl border border-[#dddddd] p-3 text-sm dark:border-[#444]">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="font-semibold">{entry.expense_id}</p>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">₹{Number(entry.approved_amount || 0).toFixed(2)}</p>
+                </div>
+                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{entry.payment_status || 'pending'}</span>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                <div>
+                  <p className="text-slate-500 dark:text-slate-400">Due Date</p>
+                  <p className="font-semibold">{entry.due_date || '—'}</p>
+                </div>
+                <div>
+                  <p className="text-slate-500 dark:text-slate-400">Paid Date</p>
+                  <p className="font-semibold">{entry.paid_date || '—'}</p>
+                </div>
+              </div>
+              {entry.payment_mode ? <p className="mt-2 text-xs"><span className="text-slate-500 dark:text-slate-400">Mode:</span> {entry.payment_mode}</p> : null}
+              {entry.transaction_reference ? <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">Ref: {entry.transaction_reference}</p> : null}
+              <button type="button" className="btn-primary mt-3 w-full px-3 py-1 text-xs" onClick={() => { setReimbursementAction(entry); setReimbursementForm({ payment_mode: entry.payment_mode || 'bank_transfer', transaction_reference: entry.transaction_reference || '' }); }} disabled={entry.payment_status === 'paid'}>Mark Paid</button>
+            </div>
+          ))}
+          {!reimbursements.length ? <p className="text-sm text-slate-500">No reimbursement ledger items yet.</p> : null}
+        </div>
+
+        <table className="hidden w-full min-w-[980px] text-sm md:table">
           <thead>
             <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
               <th className="py-2">Expense ID</th>
@@ -1704,7 +1865,7 @@ export default function AdminPage() {
                 <td className="max-w-[180px] truncate">{entry.transaction_reference || '—'}</td>
                 <td>
                   <div className="flex flex-wrap gap-2">
-                    <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => markReimbursementPaid(entry)} disabled={entry.payment_status === 'paid'}>Mark Paid</button>
+                    <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => { setReimbursementAction(entry); setReimbursementForm({ payment_mode: entry.payment_mode || 'bank_transfer', transaction_reference: entry.transaction_reference || '' }); }} disabled={entry.payment_status === 'paid'}>Mark Paid</button>
                   </div>
                 </td>
               </tr>
@@ -1921,6 +2082,57 @@ export default function AdminPage() {
             <a href={receiptPreview.url} target="_blank" rel="noreferrer" className="btn-primary inline-flex">
               Open Full Receipt
             </a>
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal
+        title="Mark Reimbursement as Paid"
+        open={Boolean(reimbursementAction)}
+        onClose={() => { setReimbursementAction(null); setReimbursementForm({ payment_mode: 'bank_transfer', transaction_reference: '' }); }}
+      >
+        {reimbursementAction ? (
+          <div className="space-y-4">
+            <div className="rounded-lg border border-[#dddddd] p-3 text-sm dark:border-[#444]">
+              <p><span className="font-semibold">Expense ID:</span> {reimbursementAction.expense_id}</p>
+              <p><span className="font-semibold">Amount:</span> ₹{Number(reimbursementAction.approved_amount || 0).toFixed(2)}</p>
+              <p><span className="font-semibold">Due Date:</span> {reimbursementAction.due_date || '—'}</p>
+              <p><span className="font-semibold">Current Status:</span> {reimbursementAction.payment_status || 'pending'}</p>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                Payment Mode
+              </label>
+              <select
+                value={reimbursementForm.payment_mode}
+                onChange={(e) => setReimbursementForm({ ...reimbursementForm, payment_mode: e.target.value })}
+                className="mt-2 w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]"
+              >
+                <option value="bank_transfer">Bank Transfer</option>
+                <option value="cash">Cash</option>
+                <option value="check">Check</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                Transaction Reference (optional)
+              </label>
+              <input
+                type="text"
+                value={reimbursementForm.transaction_reference}
+                onChange={(e) => setReimbursementForm({ ...reimbursementForm, transaction_reference: e.target.value })}
+                placeholder="UTR / Check number / Reference ID"
+                className="mt-2 w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <button type="button" className="btn-secondary" onClick={() => { setReimbursementAction(null); setReimbursementForm({ payment_mode: 'bank_transfer', transaction_reference: '' }); }}>Cancel</button>
+              <button type="button" className="btn-primary" onClick={markReimbursementPaid}>Mark Paid</button>
+            </div>
           </div>
         ) : null}
       </Modal>
