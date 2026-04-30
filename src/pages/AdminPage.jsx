@@ -122,7 +122,7 @@ export default function AdminPage() {
   const [reimbursementForm, setReimbursementForm] = useState({ payment_mode: 'bank_transfer', transaction_reference: '' });
   const [unrecognizedProjects, setUnrecognizedProjects] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [adminTab, setAdminTab] = useState('employee'); // 'employee' | 'team' | 'projects'
+  const [adminTab, setAdminTab] = useState('timesheet'); // 'timesheet' | 'leave' | 'expenses' | 'projects'
   const [bulkSelected, setBulkSelected] = useState(new Set());
   const [bulkApproving, setBulkApproving] = useState(false);
   const [rangeStart, setRangeStart] = useState(() => {
@@ -288,6 +288,15 @@ export default function AdminPage() {
 
     setNewProjectName('');
     toast.success('Project added');
+    await loadProjectData();
+  }
+
+  async function deleteProject(project) {
+    const ok = window.confirm(`Delete project "${project.name}" permanently? This cannot be undone.`);
+    if (!ok) return;
+    const { error } = await supabase.from('projects').delete().eq('id', project.id);
+    if (error) { toast.error(error.message); return; }
+    toast.success('Project deleted');
     await loadProjectData();
   }
 
@@ -630,7 +639,7 @@ export default function AdminPage() {
   }
 
   useEffect(() => {
-    if (adminTab === 'team' && employees.length) void loadTeamView();
+    if (adminTab === 'projects' && employees.length) void loadTeamView();
   }, [adminTab, rangeStart, rangeEnd, employees]);
 
   const exportEmployeePdf = async () => {
@@ -993,25 +1002,30 @@ export default function AdminPage() {
       </div>
 
       {/* Tab switcher */}
-      <div className="flex gap-2">
-        {['employee', 'team', 'projects'].map((tab) => (
+      <div className="flex flex-wrap gap-2">
+        {[
+          { key: 'timesheet', label: 'Timesheet' },
+          { key: 'leave', label: 'Leave' },
+          { key: 'expenses', label: 'Expenses' },
+          { key: 'projects', label: 'Projects' },
+        ].map(({ key, label }) => (
           <button
-            key={tab}
+            key={key}
             type="button"
-            onClick={() => setAdminTab(tab)}
-            className={`rounded-full border px-4 py-1.5 text-sm font-semibold transition capitalize ${
-              adminTab === tab
+            onClick={() => setAdminTab(key)}
+            className={`rounded-full border px-4 py-1.5 text-sm font-semibold transition ${
+              adminTab === key
                 ? 'border-teal bg-teal text-white'
                 : 'border-[#dddddd] bg-white text-slate-700 hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200'
             }`}
           >
-            {tab === 'employee' ? 'Employee View' : tab === 'team' ? 'Team View' : 'Projects'}
+            {label}
           </button>
         ))}
       </div>
 
-      {/* #4: Team View */}
-      {adminTab === 'team' ? (
+      {/* Projects Tab */}
+      {adminTab === 'projects' ? (
         <div className="space-y-4">
           <div className="card p-4">
             <div className="flex flex-wrap items-end gap-4">
@@ -1087,12 +1101,11 @@ export default function AdminPage() {
         </div>
       ) : null}
 
-      
       {adminTab === 'projects' ? (
         <div className="grid gap-4 lg:grid-cols-2">
           <div className="card p-4">
             <h2 className="text-lg font-semibold">Project Master</h2>
-            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Add and manage active projects.</p>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Add, manage, and delete projects.</p>
             <div className="mt-3 flex gap-2">
               <input type="text" value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addProject()} placeholder="Enter project name" className="w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]" />
               <button type="button" className="btn-primary" onClick={addProject}>Add</button>
@@ -1104,7 +1117,10 @@ export default function AdminPage() {
                     <p className="font-semibold">{project.name}</p>
                     <p className="text-xs text-slate-500">{project.is_active ? 'Active' : 'Archived'}</p>
                   </div>
-                  <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => toggleProjectActive(project)}>{project.is_active ? 'Archive' : 'Activate'}</button>
+                  <div className="flex gap-2">
+                    <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => toggleProjectActive(project)}>{project.is_active ? 'Archive' : 'Activate'}</button>
+                    <button type="button" className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => deleteProject(project)}>Delete</button>
+                  </div>
                 </div>
               ))}
               {!projects.length ? <p className="text-sm text-slate-500">No projects yet.</p> : null}
@@ -1172,7 +1188,349 @@ export default function AdminPage() {
         </div>
       ) : null}
 
-{adminTab !== 'employee' ? null : (<>
+{adminTab === 'timesheet' ? (
+        <div className="space-y-4">
+          <div className="card overflow-x-auto p-4 w-full">
+            <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <h2 className="font-semibold">Weekly Timesheets for {selectedEmployee?.name}</h2>
+              <div className="flex flex-wrap items-center gap-2">
+                {bulkSelected.size > 0 ? (
+                  <button
+                    type="button"
+                    className="btn-primary px-3 py-1 text-xs"
+                    onClick={bulkApproveTimesheets}
+                    disabled={bulkApproving}
+                  >
+                    {bulkApproving ? 'Approving...' : `Approve Selected (${bulkSelected.size})`}
+                  </button>
+                ) : null}
+                <span className="rounded-full bg-teal/10 px-3 py-1 text-xs font-semibold text-teal dark:bg-teal/20">
+                  Week-table approval workflow
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-3 md:hidden">
+              {weeklySheets.map((sheet) => (
+                <div key={sheet.id} className="rounded-xl border border-[#dddddd] p-3 text-sm dark:border-[#444]">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-semibold">{sheet.week_start} to {sheet.week_end}</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">{Number(sheet.total_hours || 0).toFixed(2)}h</p>
+                    </div>
+                    <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{sheet.status}</span>
+                  </div>
+                  {sheet.approval_comment ? <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">{sheet.approval_comment}</p> : null}
+                  {normalizeConflictFlags(sheet.conflict_flags).length ? (
+                    <p className="mt-1 text-xs font-semibold text-red-600 dark:text-red-300">Conflicts: {normalizeConflictFlags(sheet.conflict_flags).join(', ')}</p>
+                  ) : null}
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <label className="flex items-center gap-2 text-xs">
+                      <input
+                        type="checkbox"
+                        disabled={sheet.status === 'approved'}
+                        checked={bulkSelected.has(sheet.id)}
+                        onChange={(e) => setBulkSelected((prev) => {
+                          const next = new Set(prev);
+                          if (e.target.checked) next.add(sheet.id); else next.delete(sheet.id);
+                          return next;
+                        })}
+                      />
+                      <span>Select</span>
+                    </label>
+                    <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => openTimesheetAction(sheet, 'approved')} disabled={sheet.status === 'approved'}>Approve</button>
+                    <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => openTimesheetAction(sheet, 'needs_changes')} disabled={sheet.status === 'needs_changes'}>Need Changes</button>
+                    <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => setHistoryPreview(sheet)}>History</button>
+                  </div>
+                </div>
+              ))}
+              {!weeklySheets.length ? <p className="text-sm text-slate-500">No weekly timesheets for this employee.</p> : null}
+            </div>
+
+            <table className="hidden w-full min-w-[1100px] text-sm md:table">
+              <thead>
+                <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
+                  <th className="py-2 pr-2">
+                    <input type="checkbox" onChange={(e) => {
+                      if (e.target.checked) setBulkSelected(new Set(weeklySheets.filter((s) => s.status !== 'approved').map((s) => s.id)));
+                      else setBulkSelected(new Set());
+                    }} checked={bulkSelected.size > 0 && bulkSelected.size === weeklySheets.filter((s) => s.status !== 'approved').length} />
+                  </th>
+                  <th className="py-2">Week</th>
+                  <th>Status</th>
+                  <th>Total Hours</th>
+                  <th>Submitted At</th>
+                  <th>Reviewed At</th>
+                  <th>Comment</th>
+                  <th>Conflicts</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {weeklySheets.map((sheet) => (
+                  <tr key={sheet.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
+                    <td className="py-2 pr-2">
+                      <input
+                        type="checkbox"
+                        disabled={sheet.status === 'approved'}
+                        checked={bulkSelected.has(sheet.id)}
+                        onChange={(e) => setBulkSelected((prev) => {
+                          const next = new Set(prev);
+                          if (e.target.checked) next.add(sheet.id); else next.delete(sheet.id);
+                          return next;
+                        })}
+                      />
+                    </td>
+                    <td className="py-2">{sheet.week_start} to {sheet.week_end}</td>
+                    <td className="capitalize">{sheet.status}</td>
+                    <td>{Number(sheet.total_hours || 0).toFixed(2)}h</td>
+                    <td>{sheet.submitted_at ? new Date(sheet.submitted_at).toLocaleString() : '—'}</td>
+                    <td>{sheet.reviewed_at ? new Date(sheet.reviewed_at).toLocaleString() : '—'}</td>
+                    <td className="max-w-[220px] truncate">{sheet.approval_comment || '—'}</td>
+                    <td>
+                      {normalizeConflictFlags(sheet.conflict_flags).length ? (
+                        <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700 dark:bg-red-900/30 dark:text-red-300">
+                          {normalizeConflictFlags(sheet.conflict_flags).join(', ')}
+                        </span>
+                      ) : '—'}
+                    </td>
+                    <td>
+                      <div className="flex flex-wrap gap-2">
+                        <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => openTimesheetAction(sheet, 'approved')} disabled={sheet.status === 'approved'}>Approve</button>
+                        <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => openTimesheetAction(sheet, 'needs_changes')} disabled={sheet.status === 'needs_changes'}>Need Changes</button>
+                        <button type="button" className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => openTimesheetAction(sheet, 'rejected')} disabled={sheet.status === 'rejected'}>Reject</button>
+                        <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => setHistoryPreview(sheet)}>History</button>
+                        <button type="button" className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => deleteTimesheetAsAdmin(sheet)}>Delete</button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+                {!weeklySheets.length ? (
+                  <tr>
+                    <td className="py-3 text-slate-500" colSpan={9}>No weekly timesheets for this employee.</td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
+
+      {adminTab === 'leave' ? (
+        <div className="card overflow-x-auto p-4 w-full">
+          <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <h2 className="font-semibold">Leave Requests for {selectedEmployee?.name}</h2>
+            <span className="rounded-full bg-teal/10 px-3 py-1 text-xs font-semibold text-teal dark:bg-teal/20">
+              In-app leave workflow
+            </span>
+          </div>
+
+          <div className="space-y-3 md:hidden">
+            {leaveRequests.map((request) => (
+              <div key={request.id} className="rounded-xl border border-[#dddddd] p-3 text-sm dark:border-[#444]">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="font-semibold">{request.leave_type}</p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">{request.start_date} to {request.end_date}</p>
+                  </div>
+                  <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{request.status}</span>
+                </div>
+                <p className="mt-2 font-semibold">{request.subject}</p>
+                {request.content ? <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{request.content}</p> : null}
+                {request.approval_comment ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Comment: {request.approval_comment}</p> : null}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => openLeaveAction(request, 'approved')} disabled={request.status === 'approved'}>Approve</button>
+                  <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => openLeaveAction(request, 'rejected')} disabled={request.status === 'rejected'}>Reject</button>
+                  <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => setHistoryPreview(request)}>History</button>
+                </div>
+              </div>
+            ))}
+            {!leaveRequests.length ? <p className="text-sm text-slate-500">No leave requests for this employee.</p> : null}
+          </div>
+
+          <table className="hidden w-full min-w-[1100px] text-sm md:table">
+            <thead>
+              <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
+                <th className="py-2">Type</th>
+                <th>Period</th>
+                <th>Subject</th>
+                <th>Content</th>
+                <th>Status</th>
+                <th>Submitted At</th>
+                <th>Comment</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {leaveRequests.map((request) => (
+                <tr key={request.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
+                  <td className="py-2">{request.leave_type}</td>
+                  <td>{request.start_date} to {request.end_date}</td>
+                  <td className="max-w-[180px] truncate">{request.subject}</td>
+                  <td className="max-w-[220px] truncate">{request.content}</td>
+                  <td className="capitalize">{request.status}</td>
+                  <td>{request.submitted_at ? new Date(request.submitted_at).toLocaleString() : '—'}</td>
+                  <td className="max-w-[180px] truncate">{request.approval_comment || '—'}</td>
+                  <td>
+                    <div className="flex flex-wrap gap-2">
+                      <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => openLeaveAction(request, 'approved')} disabled={request.status === 'approved'}>Approve</button>
+                      <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => openLeaveAction(request, 'rejected')} disabled={request.status === 'rejected'}>Reject</button>
+                      <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => openLeaveAction(request, 'pending')} disabled={request.status === 'pending'}>Pending</button>
+                      <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => setHistoryPreview(request)}>History</button>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!leaveRequests.length ? (
+                <tr>
+                  <td className="py-3 text-slate-500" colSpan={8}>No leave requests for this employee.</td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      {adminTab === 'expenses' ? (
+        <div className="space-y-4">
+          <div className="card overflow-x-auto p-4 w-full">
+            <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <h2 className="font-semibold">Expenses for {selectedEmployee?.name}</h2>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  { key: 'all', label: `All (${expenseStatusCounts.all})` },
+                  { key: 'pending', label: `Pending (${expenseStatusCounts.pending})` },
+                  { key: 'approved', label: `Approved (${expenseStatusCounts.approved})` },
+                  { key: 'rejected', label: `Rejected (${expenseStatusCounts.rejected})` }
+                ].map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => setExpenseStatusFilter(item.key)}
+                    className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                      expenseStatusFilter === item.key
+                        ? 'border-teal bg-teal text-white'
+                        : 'border-[#dddddd] bg-white text-slate-700 hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]'
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="mb-4 grid gap-3 md:grid-cols-3">
+              <div className="rounded-xl border border-[#dddddd] p-3 dark:border-[#444]">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Pending Approvals</p>
+                <p className="mt-1 text-xl font-bold">{slaStats.totalPending}</p>
+              </div>
+              <div className="rounded-xl border border-[#dddddd] p-3 dark:border-[#444]">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Pending {'>'} 24h</p>
+                <p className="mt-1 text-xl font-bold text-amber-600 dark:text-amber-300">{slaStats.over24h}</p>
+              </div>
+              <div className="rounded-xl border border-[#dddddd] p-3 dark:border-[#444]">
+                <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Pending {'>'} 3 days</p>
+                <p className="mt-1 text-xl font-bold text-red-600 dark:text-red-300">{slaStats.over3d}</p>
+              </div>
+            </div>
+
+            <div className="mb-4 overflow-x-auto rounded-xl border border-[#dddddd] dark:border-[#444]">
+              <table className="w-full min-w-[980px] text-sm">
+                <thead>
+                  <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
+                    <th className="py-2 px-3">Request</th>
+                    <th>Type</th>
+                    <th>Pending Since</th>
+                    <th>Elapsed</th>
+                    <th>Last Reminder</th>
+                    <th>Escalated</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {pendingApprovals.slice(0, 8).map((item) => (
+                    <tr key={`${item.kind}-${item.id}`} className="border-b border-[#f1f1f1] dark:border-[#444]">
+                      <td className="py-2 px-3">{item.label}</td>
+                      <td className="capitalize">{item.kind}</td>
+                      <td>{item.sinceAt ? new Date(item.sinceAt).toLocaleString() : '-'}</td>
+                      <td className={item.pendingHours > 72 ? 'font-semibold text-red-600 dark:text-red-300' : item.pendingHours > 24 ? 'font-semibold text-amber-600 dark:text-amber-300' : ''}>
+                        {formatSlaDuration(item.pendingHours)}
+                      </td>
+                      <td>{item.lastReminderAt ? new Date(item.lastReminderAt).toLocaleString() : '-'}</td>
+                      <td>{item.escalatedAt ? new Date(item.escalatedAt).toLocaleString() : '-'}</td>
+                      <td>
+                        <div className="flex flex-wrap gap-2">
+                          <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => updateSlaMarker(item.kind, item.id, 'last_reminder_at')}>Remind</button>
+                          <button type="button" className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => updateSlaMarker(item.kind, item.id, 'escalated_at')}>Escalate</button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {!pendingApprovals.length ? (
+                    <tr>
+                      <td className="py-3 px-3 text-slate-500" colSpan={7}>No pending approvals for SLA tracking.</td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="space-y-3 md:hidden">
+              {filteredExpenses.map((entry) => (
+                <div key={entry.id} className="rounded-xl border border-[#dddddd] p-3 text-sm dark:border-[#444]">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-semibold">{entry.date} {entry.expense_time?.slice(0, 5) || '—'}</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">{entry.project || '-'} · {formatExpenseCategoryList(entry)}</p>
+                    </div>
+                    <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{entry.status}</span>
+                  </div>
+                  <p className="mt-2 font-semibold">₹{Number(entry.amount).toFixed(2)}</p>
+                  {entry.approval_comment ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{entry.approval_comment}</p> : null}
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => openStatusAction(entry, 'approved')} disabled={entry.status === 'approved'}>Approve</button>
+                    <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => openStatusAction(entry, 'rejected')} disabled={entry.status === 'rejected'}>Reject</button>
+                    <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => openStatusAction(entry, 'pending')} disabled={entry.status === 'pending'}>Pending</button>
+                    <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => setHistoryPreview(entry)}>History</button>
+                    <button type="button" className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => deleteExpenseAsAdmin(entry)}>Delete</button>
+                  </div>
+                </div>
+              ))}
+              {!filteredExpenses.length ? <p className="text-sm text-slate-500">No expenses for this employee.</p> : null}
+            </div>
+
+            <table className="hidden w-full min-w-[1120px] text-sm md:table">
+              <thead>
+                <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
+                  <th className="py-2">Date</th>
+                  <th>Time</th>
+                  <th>Project</th>
+                  <th>Category</th>
+                  <th>Amount</th>
+                  <th>Status</th>
+                  <th>Notes</th>
+                  <th>Conflicts</th>
+                  <th>Receipt</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredExpenses.map((entry) => (
+                  <tr key={entry.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
+                    <td className="py-2">{entry.date}</td>
+                    <td>{entry.expense_time?.slice(0, 5) || '—'}</td>
+                    <td>{entry.project || '-'}</td>
+                    <td>{formatExpenseCategoryList(entry)}</td>
+                    <td>₹{Number(entry.amount).toFixed(2)}</td>
+                    <td className="capitalize">
+                      {entry.status}
+                      {entry.approval_comment ? <p className="mt-1 max-w-[180px] truncate text-[11px] text-slate-500 dark:text-slate-400">{entry.approval_comment}</p> : null}
+                    </td>
+                    <td>{entry.notes || '—'}</td>
+                    <td>
+                      {normalizeConflictFlags(entry.conflict_flags).length ? (
+                        <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700 dark:bg-red-900/30 dark:text-red-300">
+                          {normalizeConflictFlags(entry.conflict_flags).join(', ')}
 
       <div className="card p-4">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -1556,362 +1914,61 @@ export default function AdminPage() {
             ) : null}
           </tbody>
         </table>
-      </div>
 
-      <div className="card overflow-x-auto p-4 w-full">
-        <h2 className="mb-3 font-semibold">Timelines for {selectedEmployee?.name}</h2>
-        <div className="space-y-3 md:hidden">
-          {timeline.map((entry) => (
-            <div key={entry.id} className="rounded-xl border border-[#dddddd] p-3 text-sm dark:border-[#444]">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="font-semibold">{entry.date}</p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">{entry.start_time?.slice(0, 5)} - {entry.end_time?.slice(0, 5)}</p>
-                </div>
-                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{entry.type}</span>
-              </div>
-              <p className="mt-2 font-semibold">{Number(entry.duration || calculateDurationHours(entry.start_time, entry.end_time)).toFixed(2)}h</p>
-              {entry.description ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{entry.description}</p> : null}
-            </div>
-          ))}
-          {!timeline.length ? <p className="text-sm text-slate-500">No timeline entries for this employee.</p> : null}
-        </div>
-        <table className="hidden w-full min-w-[900px] text-sm md:table">
-          <thead>
-            <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
-              <th className="py-2">Date</th>
-              <th>Start</th>
-              <th>End</th>
-              <th>Duration</th>
-              <th>Type</th>
-              <th>Description</th>
-            </tr>
-          </thead>
-          <tbody>
-            {timeline.map((entry) => (
-              <tr key={entry.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
-                <td className="py-2">{entry.date}</td>
-                <td>{entry.start_time?.slice(0, 5)}</td>
-                <td>{entry.end_time?.slice(0, 5)}</td>
-                <td>{Number(entry.duration || calculateDurationHours(entry.start_time, entry.end_time)).toFixed(2)}h</td>
-                <td className="capitalize">{entry.type}</td>
-                <td>{entry.description || '—'}</td>
-              </tr>
-            ))}
-            {!timeline.length ? (
-              <tr>
-                <td className="py-3 text-slate-500" colSpan={6}>No timeline entries for this employee.</td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="card overflow-x-auto p-4 w-full">
-        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <h2 className="font-semibold">Leave Requests for {selectedEmployee?.name}</h2>
-          <span className="rounded-full bg-teal/10 px-3 py-1 text-xs font-semibold text-teal dark:bg-teal/20">
-            In-app leave workflow
-          </span>
-        </div>
-
-        <div className="space-y-3 md:hidden">
-          {leaveRequests.map((request) => (
-            <div key={request.id} className="rounded-xl border border-[#dddddd] p-3 text-sm dark:border-[#444]">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="font-semibold">{request.leave_type}</p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">{request.start_date} to {request.end_date}</p>
-                </div>
-                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{request.status}</span>
-              </div>
-              <p className="mt-2 font-semibold">{request.subject}</p>
-              {request.content ? <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{request.content}</p> : null}
-              {request.approval_comment ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Comment: {request.approval_comment}</p> : null}
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => openLeaveAction(request, 'approved')} disabled={request.status === 'approved'}>Approve</button>
-                <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => openLeaveAction(request, 'rejected')} disabled={request.status === 'rejected'}>Reject</button>
-                <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => setHistoryPreview(request)}>History</button>
-              </div>
-            </div>
-          ))}
-          {!leaveRequests.length ? <p className="text-sm text-slate-500">No leave requests for this employee.</p> : null}
-        </div>
-
-        <table className="hidden w-full min-w-[1100px] text-sm md:table">
-          <thead>
-            <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
-              <th className="py-2">Type</th>
-              <th>Period</th>
-              <th>Subject</th>
-              <th>Content</th>
-              <th>Status</th>
-              <th>Submitted At</th>
-              <th>Comment</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {leaveRequests.map((request) => (
-              <tr key={request.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
-                <td className="py-2">{request.leave_type}</td>
-                <td>{request.start_date} to {request.end_date}</td>
-                <td className="max-w-[180px] truncate">{request.subject}</td>
-                <td className="max-w-[220px] truncate">{request.content}</td>
-                <td className="capitalize">{request.status}</td>
-                <td>{request.submitted_at ? new Date(request.submitted_at).toLocaleString() : '—'}</td>
-                <td className="max-w-[180px] truncate">{request.approval_comment || '—'}</td>
-                <td>
-                  <div className="flex flex-wrap gap-2">
-                    <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => openLeaveAction(request, 'approved')} disabled={request.status === 'approved'}>Approve</button>
-                    <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => openLeaveAction(request, 'rejected')} disabled={request.status === 'rejected'}>Reject</button>
-                    <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => openLeaveAction(request, 'pending')} disabled={request.status === 'pending'}>Pending</button>
-                    <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => setHistoryPreview(request)}>History</button>
+        <div className="mt-4 space-y-4">
+          <div className="rounded-xl border border-[#dddddd] p-4 dark:border-[#444]">
+            <h3 className="mb-2 font-semibold">Reimbursement Ledger for {selectedEmployee?.name}</h3>
+            <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">Approved vs Paid tracking</p>
+            
+            <div className="space-y-3 md:hidden">
+              {reimbursements.map((entry) => (
+                <div key={entry.id} className="rounded-lg border border-[#dddddd] p-2 text-xs dark:border-[#444]">
+                  <div className="flex items-start justify-between gap-2">
+                    <div>
+                      <p className="font-semibold">{entry.expense_id}</p>
+                      <p className="text-slate-500">₹{Number(entry.approved_amount || 0).toFixed(2)}</p>
+                    </div>
+                    <span className="whitespace-nowrap rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{entry.payment_status || 'pending'}</span>
                   </div>
-                </td>
-              </tr>
-            ))}
-            {!leaveRequests.length ? (
-              <tr>
-                <td className="py-3 text-slate-500" colSpan={8}>No leave requests for this employee.</td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="card overflow-x-auto p-4 w-full">
-        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <h2 className="font-semibold">Weekly Timesheets for {selectedEmployee?.name}</h2>
-          <div className="flex flex-wrap items-center gap-2">
-            {bulkSelected.size > 0 ? (
-              <button
-                type="button"
-                className="btn-primary px-3 py-1 text-xs"
-                onClick={bulkApproveTimesheets}
-                disabled={bulkApproving}
-              >
-                {bulkApproving ? 'Approving...' : `Approve Selected (${bulkSelected.size})`}
-              </button>
-            ) : null}
-            <span className="rounded-full bg-teal/10 px-3 py-1 text-xs font-semibold text-teal dark:bg-teal/20">
-              Week-table approval workflow
-            </span>
-          </div>
-        </div>
-
-        <div className="space-y-3 md:hidden">
-          {weeklySheets.map((sheet) => (
-            <div key={sheet.id} className="rounded-xl border border-[#dddddd] p-3 text-sm dark:border-[#444]">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="font-semibold">{sheet.week_start} to {sheet.week_end}</p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">{Number(sheet.total_hours || 0).toFixed(2)}h</p>
+                  <button type="button" className="btn-primary mt-2 w-full px-3 py-1 text-xs" onClick={() => { setReimbursementAction(entry); setReimbursementForm({ payment_mode: entry.payment_mode || 'bank_transfer', transaction_reference: entry.transaction_reference || '' }); }} disabled={entry.payment_status === 'paid'}>Mark Paid</button>
                 </div>
-                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{sheet.status}</span>
-              </div>
-              {sheet.approval_comment ? <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">{sheet.approval_comment}</p> : null}
-              {normalizeConflictFlags(sheet.conflict_flags).length ? (
-                <p className="mt-1 text-xs font-semibold text-red-600 dark:text-red-300">Conflicts: {normalizeConflictFlags(sheet.conflict_flags).join(', ')}</p>
-              ) : null}
-              <div className="mt-3 flex flex-wrap gap-2">
-                <label className="flex items-center gap-2 text-xs">
-                  <input
-                    type="checkbox"
-                    disabled={sheet.status === 'approved'}
-                    checked={bulkSelected.has(sheet.id)}
-                    onChange={(e) => setBulkSelected((prev) => {
-                      const next = new Set(prev);
-                      if (e.target.checked) next.add(sheet.id); else next.delete(sheet.id);
-                      return next;
-                    })}
-                  />
-                  <span>Select</span>
-                </label>
-                <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => openTimesheetAction(sheet, 'approved')} disabled={sheet.status === 'approved'}>Approve</button>
-                <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => openTimesheetAction(sheet, 'needs_changes')} disabled={sheet.status === 'needs_changes'}>Need Changes</button>
-                <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => setHistoryPreview(sheet)}>History</button>
-              </div>
+              ))}
+              {!reimbursements.length ? <p className="text-xs text-slate-500">No reimbursement ledger items yet.</p> : null}
             </div>
-          ))}
-          {!weeklySheets.length ? <p className="text-sm text-slate-500">No weekly timesheets for this employee.</p> : null}
-        </div>
 
-        <table className="hidden w-full min-w-[1100px] text-sm md:table">
-          <thead>
-            <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
-              <th className="py-2 pr-2">
-                <input type="checkbox" onChange={(e) => {
-                  if (e.target.checked) setBulkSelected(new Set(weeklySheets.filter((s) => s.status !== 'approved').map((s) => s.id)));
-                  else setBulkSelected(new Set());
-                }} checked={bulkSelected.size > 0 && bulkSelected.size === weeklySheets.filter((s) => s.status !== 'approved').length} />
-              </th>
-              <th className="py-2">Week</th>
-              <th>Status</th>
-              <th>Total Hours</th>
-              <th>Submitted At</th>
-              <th>Reviewed At</th>
-              <th>Comment</th>
-              <th>Conflicts</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {weeklySheets.map((sheet) => (
-              <tr key={sheet.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
-                <td className="py-2 pr-2">
-                  <input
-                    type="checkbox"
-                    disabled={sheet.status === 'approved'}
-                    checked={bulkSelected.has(sheet.id)}
-                    onChange={(e) => setBulkSelected((prev) => {
-                      const next = new Set(prev);
-                      if (e.target.checked) next.add(sheet.id); else next.delete(sheet.id);
-                      return next;
-                    })}
-                  />
-                </td>
-                <td className="py-2">{sheet.week_start} to {sheet.week_end}</td>
-                <td className="capitalize">{sheet.status}</td>
-                <td>{Number(sheet.total_hours || 0).toFixed(2)}h</td>
-                <td>{sheet.submitted_at ? new Date(sheet.submitted_at).toLocaleString() : '—'}</td>
-                <td>{sheet.reviewed_at ? new Date(sheet.reviewed_at).toLocaleString() : '—'}</td>
-                <td className="max-w-[220px] truncate">{sheet.approval_comment || '—'}</td>
-                <td>
-                  {normalizeConflictFlags(sheet.conflict_flags).length ? (
-                    <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700 dark:bg-red-900/30 dark:text-red-300">
-                      {normalizeConflictFlags(sheet.conflict_flags).join(', ')}
-                    </span>
-                  ) : '—'}
-                </td>
-                <td>
-                  <div className="flex flex-wrap gap-2">
-                    <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => openTimesheetAction(sheet, 'approved')} disabled={sheet.status === 'approved'}>Approve</button>
-                    <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => openTimesheetAction(sheet, 'needs_changes')} disabled={sheet.status === 'needs_changes'}>Need Changes</button>
-                    <button type="button" className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => openTimesheetAction(sheet, 'rejected')} disabled={sheet.status === 'rejected'}>Reject</button>
-                    <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => setHistoryPreview(sheet)}>History</button>
-                    <button type="button" className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => deleteTimesheetAsAdmin(sheet)}>Delete</button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {!weeklySheets.length ? (
-              <tr>
-                <td className="py-3 text-slate-500" colSpan={9}>No weekly timesheets for this employee.</td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="card overflow-x-auto p-4 w-full">
-        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <h2 className="font-semibold">Reimbursement Ledger for {selectedEmployee?.name}</h2>
-          <span className="rounded-full bg-teal/10 px-3 py-1 text-xs font-semibold text-teal dark:bg-teal/20">
-            Approved vs Paid tracking
-          </span>
-        </div>
-
-        <div className="space-y-3 md:hidden">
-          {reimbursements.map((entry) => (
-            <div key={entry.id} className="rounded-xl border border-[#dddddd] p-3 text-sm dark:border-[#444]">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="font-semibold">{entry.expense_id}</p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">₹{Number(entry.approved_amount || 0).toFixed(2)}</p>
-                </div>
-                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{entry.payment_status || 'pending'}</span>
-              </div>
-              <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
-                <div>
-                  <p className="text-slate-500 dark:text-slate-400">Due Date</p>
-                  <p className="font-semibold">{entry.due_date || '—'}</p>
-                </div>
-                <div>
-                  <p className="text-slate-500 dark:text-slate-400">Paid Date</p>
-                  <p className="font-semibold">{entry.paid_date || '—'}</p>
-                </div>
-              </div>
-              {entry.payment_mode ? <p className="mt-2 text-xs"><span className="text-slate-500 dark:text-slate-400">Mode:</span> {entry.payment_mode}</p> : null}
-              {entry.transaction_reference ? <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">Ref: {entry.transaction_reference}</p> : null}
-              <button type="button" className="btn-primary mt-3 w-full px-3 py-1 text-xs" onClick={() => { setReimbursementAction(entry); setReimbursementForm({ payment_mode: entry.payment_mode || 'bank_transfer', transaction_reference: entry.transaction_reference || '' }); }} disabled={entry.payment_status === 'paid'}>Mark Paid</button>
-            </div>
-          ))}
-          {!reimbursements.length ? <p className="text-sm text-slate-500">No reimbursement ledger items yet.</p> : null}
-        </div>
-
-        <table className="hidden w-full min-w-[980px] text-sm md:table">
-          <thead>
-            <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
-              <th className="py-2">Expense ID</th>
-              <th>Approved Amount</th>
-              <th>Due Date</th>
-              <th>Status</th>
-              <th>Paid Date</th>
-              <th>Payment Mode</th>
-              <th>Transaction Ref</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {reimbursements.map((entry) => (
-              <tr key={entry.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
-                <td className="py-2">{entry.expense_id}</td>
-                <td>₹{Number(entry.approved_amount || 0).toFixed(2)}</td>
-                <td>{entry.due_date || '—'}</td>
-                <td className="capitalize">{entry.payment_status || '-'}</td>
-                <td>{entry.paid_date || '—'}</td>
-                <td>{entry.payment_mode || '—'}</td>
-                <td className="max-w-[180px] truncate">{entry.transaction_reference || '—'}</td>
-                <td>
-                  <div className="flex flex-wrap gap-2">
-                    <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => { setReimbursementAction(entry); setReimbursementForm({ payment_mode: entry.payment_mode || 'bank_transfer', transaction_reference: entry.transaction_reference || '' }); }} disabled={entry.payment_status === 'paid'}>Mark Paid</button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {!reimbursements.length ? (
-              <tr>
-                <td className="py-3 text-slate-500" colSpan={8}>No reimbursement ledger items yet.</td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
-
-      <div className="grid gap-6 lg:grid-cols-2">
-        <div className="card p-4 w-full">
-          <h2 className="mb-3 font-semibold">Timeline Hours by Month</h2>
-          <div className="h-80 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={perMonthHours}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="month" />
-                <YAxis />
-                <Tooltip />
-                <Bar dataKey="hours" fill="#04AA6D" />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        <div className="card p-4 w-full">
-          <h2 className="mb-3 font-semibold">Expense Category Wheel</h2>
-          <div className="h-80 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie data={summary.categoryData} dataKey="value" nameKey="name" innerRadius={56} outerRadius={96} paddingAngle={3}>
-                  {summary.categoryData.map((entry, index) => (
-                    <Cell key={entry.name} fill={PIE_COLORS[index % PIE_COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip />
-                <Legend />
-              </PieChart>
-            </ResponsiveContainer>
+            <table className="hidden w-full min-w-[600px] text-xs md:table">
+              <thead>
+                <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
+                  <th className="py-1.5 px-2">Expense ID</th>
+                  <th>Amount</th>
+                  <th>Status</th>
+                  <th>Paid Date</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {reimbursements.map((entry) => (
+                  <tr key={entry.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
+                    <td className="py-1.5 px-2">{entry.expense_id}</td>
+                    <td>₹{Number(entry.approved_amount || 0).toFixed(2)}</td>
+                    <td className="capitalize text-[10px]">{entry.payment_status || '-'}</td>
+                    <td>{entry.paid_date || '—'}</td>
+                    <td>
+                      <button type="button" className="btn-primary px-2 py-0.5 text-[10px]" onClick={() => { setReimbursementAction(entry); setReimbursementForm({ payment_mode: entry.payment_mode || 'bank_transfer', transaction_reference: entry.transaction_reference || '' }); }} disabled={entry.payment_status === 'paid'}>Mark Paid</button>
+                    </td>
+                  </tr>
+                ))}
+                {!reimbursements.length ? (
+                  <tr>
+                    <td className="py-1.5 px-2 text-slate-500" colSpan={5}>No reimbursement ledger items yet.</td>
+                  </tr>
+                ) : null}
+              </tbody>
+            </table>
           </div>
         </div>
       </div>
+    ) : null}
 
       <Modal
         title={statusAction ? `Update Expense to ${statusAction.status}` : 'Update Expense Status'}
