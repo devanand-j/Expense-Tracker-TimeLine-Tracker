@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from 'recharts';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
@@ -59,6 +60,7 @@ function toInputDate(dateValue) {
 
 export default function AdminPage() {
   const { user, profile } = useAuth();
+  const [searchParams] = useSearchParams();
   const [employees, setEmployees] = useState([]);
   const [projects, setProjects] = useState([]);
   const [projectAssignments, setProjectAssignments] = useState([]);
@@ -93,6 +95,16 @@ export default function AdminPage() {
     return toInputDate(new Date(today.getFullYear(), today.getMonth(), 1));
   });
   const [rangeEnd, setRangeEnd] = useState(() => toInputDate(new Date()));
+
+  useEffect(() => {
+    const tab = searchParams.get('tab');
+    if (!tab) return;
+
+    const allowedTabs = new Set(['overview', 'timesheet', 'leave', 'expenses']);
+    if (allowedTabs.has(tab)) {
+      setAdminTab(tab);
+    }
+  }, [searchParams]);
 
   async function loadEmployees() {
     const { data, error } = await supabase

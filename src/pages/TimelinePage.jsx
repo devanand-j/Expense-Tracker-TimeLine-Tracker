@@ -8,11 +8,9 @@ import { supabase } from '../lib/supabaseClient';
 import { calculateDurationHours } from '../lib/time';
 import { validateTimelineTimes } from '../utils/validation';
 
-const TYPES = [
-  { value: 'onsite',       label: 'Onsite',        color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400' },
-  { value: 'offsite',      label: 'Offsite',       color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400' },
-  { value: 'team_lunch',   label: 'Team Lunch',    color: 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400' },
-  { value: 'client_visit', label: 'Client Visit',  color: 'bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-400' },
+const SUPPORT_MODES = [
+  { value: 'onsite', label: 'Onsite Support', color: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400' },
+  { value: 'offsite', label: 'Remote Support', color: 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400' },
 ];
 
 const SHIFTS = [
@@ -20,7 +18,7 @@ const SHIFTS = [
   { value: 'night', label: 'Night Shift', color: 'bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200' },
 ];
 
-const TYPE_MAP = Object.fromEntries(TYPES.map((t) => [t.value, t]));
+const TYPE_MAP = Object.fromEntries(SUPPORT_MODES.map((t) => [t.value, t]));
 const SHIFT_MAP = Object.fromEntries(SHIFTS.map((s) => [s.value, s]));
 
 const defaultForm = {
@@ -254,8 +252,8 @@ export default function TimelinePage() {
           value={filters.type}
           onChange={(e) => setFilters((x) => ({ ...x, type: e.target.value }))}
         >
-          <option value="">All Types</option>
-          {TYPES.map((type) => (
+          <option value="">All Support Modes</option>
+          {SUPPORT_MODES.map((type) => (
             <option key={type.value} value={type.value}>{type.label}</option>
           ))}
         </select>
@@ -313,8 +311,8 @@ export default function TimelinePage() {
       <div className="grid gap-4 sm:grid-cols-3">
         {[
           { label: 'This Week Total', value: `${stats.total}h`, icon: '⏱', color: 'text-teal-600' },
-          { label: 'Onsite / Visits', value: `${stats.onsite}h`, icon: '🏢', color: 'text-emerald-600' },
-          { label: 'Offsite', value: `${stats.offsite}h`, icon: '🏠', color: 'text-blue-600' },
+          { label: 'Onsite Support', value: `${stats.onsite}h`, icon: '🏢', color: 'text-emerald-600' },
+          { label: 'Remote Support', value: `${stats.offsite}h`, icon: '🏠', color: 'text-blue-600' },
         ].map((s) => (
           <div key={s.label} className="card flex items-center gap-4 p-5 dark:bg-slate-800 dark:border-slate-700">
             <span className="text-3xl">{s.icon}</span>
@@ -467,6 +465,7 @@ export default function TimelinePage() {
                 </button>
               ))}
             </div>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Choose one shift only.</p>
           </div>
 
           <div>
@@ -484,23 +483,24 @@ export default function TimelinePage() {
           </div>
 
           <div>
-            <label className="form-label">Type <span className="text-red-500">*</span></label>
+            <label className="form-label">Support Mode <span className="text-red-500">*</span></label>
             <div className="grid grid-cols-2 gap-2">
-              {TYPES.map((t) => (
+              {SUPPORT_MODES.map((mode) => (
                 <button
-                  key={t.value}
+                  key={mode.value}
                   type="button"
-                  onClick={() => setForm((x) => ({ ...x, type: t.value }))}
+                  onClick={() => setForm((x) => ({ ...x, type: mode.value }))}
                   className={`rounded-xl border px-3 py-2.5 text-sm font-semibold transition
-                    ${form.type === t.value
+                    ${form.type === mode.value
                       ? 'border-teal bg-teal text-white shadow shadow-teal/30'
                       : 'border-slate-200 bg-white text-slate-600 hover:border-teal/40 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300'
                     }`}
                 >
-                  {t.label}
+                  {mode.label}
                 </button>
               ))}
             </div>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Choose one support mode only.</p>
           </div>
 
           <button className="btn-primary w-full py-3" type="submit" disabled={saving}>

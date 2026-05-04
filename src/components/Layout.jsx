@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useNotifications } from '../context/NotificationContext';
@@ -48,6 +48,24 @@ export default function Layout({ children }) {
   const navigate = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [bellOpen, setBellOpen] = useState(false);
+
+  useEffect(() => {
+    if (!bellOpen) return;
+
+    const handleKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setBellOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [bellOpen]);
+
+  const goToAdminSection = (section) => {
+    setBellOpen(false);
+    navigate(`/admin?tab=${section}`);
+  };
 
   const initials = profile?.name
     ? profile.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()
@@ -231,15 +249,22 @@ export default function Layout({ children }) {
                     </div>
                     <div className="divide-y divide-slate-50 dark:divide-slate-700">
                       {[
-                        { label: 'Expenses', count: pendingCounts.expenses, color: 'bg-amber-500' },
-                        { label: 'Leave Requests', count: pendingCounts.leaves, color: 'bg-violet-500' },
-                        { label: 'Timesheets', count: pendingCounts.timesheets, color: 'bg-sky-500' },
+                        { label: 'Expenses', count: pendingCounts.expenses, color: 'bg-amber-500', section: 'expenses' },
+                        { label: 'Leave Requests', count: pendingCounts.leaves, color: 'bg-violet-500', section: 'leave' },
+                        { label: 'Timesheets', count: pendingCounts.timesheets, color: 'bg-sky-500', section: 'timesheet' },
                       ].map((item) => (
                         <div key={item.label} className="flex items-center justify-between px-4 py-2.5">
-                          <span className="text-sm text-slate-600 dark:text-slate-300">{item.label}</span>
-                          <span className={`flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[11px] font-bold text-white ${item.count > 0 ? item.color : 'bg-slate-300 dark:bg-slate-600'}`}>
+                          <button type="button" onClick={() => goToAdminSection(item.section)} className="text-left text-sm text-slate-600 transition hover:text-teal dark:text-slate-300 dark:hover:text-teal">
+                            {item.label}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => goToAdminSection(item.section)}
+                            className={`flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[11px] font-bold text-white transition hover:scale-105 ${item.count > 0 ? item.color : 'bg-slate-300 dark:bg-slate-600'}`}
+                            aria-label={`Open ${item.label}`}
+                          >
                             {item.count}
-                          </span>
+                          </button>
                         </div>
                       ))}
                     </div>
