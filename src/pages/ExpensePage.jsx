@@ -67,7 +67,7 @@ const defaultForm = {
   status: 'draft'
 };
 
-const WEEK_DAY_KEYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+const WEEK_DAY_KEYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 
 function todayKey() {
   const now = new Date();
@@ -96,10 +96,11 @@ function toHours(value) {
   return Number.isFinite(numeric) ? numeric : 0;
 }
 
-// Collect dates that have ANY hours in ANY timesheet (draft, submitted, or approved)
-function collectFilledTimesheetDays(sheets) {
+// Collect dates that have hours in APPROVED timesheets only
+function collectApprovedTimesheetDays(sheets) {
   const result = new Set();
   (sheets || []).forEach((sheet) => {
+    if (sheet.status !== 'approved') return;
     if (!sheet.week_start || !Array.isArray(sheet.rows)) return;
     sheet.rows.forEach((row) => {
       WEEK_DAY_KEYS.forEach((dayKey, idx) => {
@@ -176,7 +177,7 @@ export default function ExpensePage() {
     if (onApprovedLeaveDate && !porterOnLeaveException) return 'Expense cannot be raised on approved leave dates.';
     if (offsiteDateSet.has(dateValue)) return 'Expense cannot be raised for an offsite day.';
     if (!approvedTimesheetDateSet.has(dateValue) && !porterOnLeaveException) {
-      return 'Expense can only be added on dates with a filled timesheet or an approved leave.';
+      return 'Expense can only be added on dates covered by an approved timesheet or an approved leave.';
     }
     return '';
   };
@@ -224,7 +225,7 @@ export default function ExpensePage() {
     setItems(expenseRes.data || []);
     setAvailableProjects([...new Set(projectNames)].sort((a, b) => a.localeCompare(b)));
     setOffsiteDates([...(new Set((offsiteRes.data || []).map((entry) => entry.date).filter(Boolean)))]);
-    setApprovedTimesheetDays([...collectFilledTimesheetDays(approvedTimesheetRes.data || [])]);
+    setApprovedTimesheetDays([...collectApprovedTimesheetDays(approvedTimesheetRes.data || [])]);
     setApprovedLeaveDays([...collectApprovedLeaveDays(leaveRes.data || [])]);
   }
 
@@ -461,7 +462,7 @@ export default function ExpensePage() {
                 isDateDisabled={isAdmin ? undefined : (dateKey) => isBlockedExpenseDate(dateKey)}
                 dayToneMap={isAdmin ? {} : calendarDayToneMap}
               />
-              {!isAdmin ? <p className="mt-1 text-[11px] text-slate-400">Green: dates with filled timesheet hours. Red: approved leave (Porter delivery exception applies).</p> : null}
+              {!isAdmin ? <p className="mt-1 text-[11px] text-slate-400">Green: dates with approved timesheet hours. Red: approved leave (Porter delivery exception applies).</p> : null}
               {!isAdmin && form.date && isBlockedExpenseDate(form.date) ? <p className="mt-1 text-[11px] font-semibold text-red-500">{getExpenseDateBlockReason(form.date)}</p> : null}
             </div>
             <div>

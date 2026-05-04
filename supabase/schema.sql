@@ -154,7 +154,7 @@ $$;
 create table if not exists public.leave_requests (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.profiles(id) on delete cascade,
-  leave_type text not null check (leave_type in ('CL', 'SL', 'FMLA', 'Study Leave')),
+  leave_type text not null check (leave_type in ('CL', 'SL')),
   subject text not null check (length(trim(subject)) > 0),
   content text not null check (length(trim(content)) > 0),
   start_date date not null,
@@ -229,6 +229,7 @@ create table if not exists public.weekly_timesheets (
   status_history jsonb not null default '[]'::jsonb,
   conflict_flags jsonb not null default '[]'::jsonb,
   has_conflict boolean not null default false,
+  approved_days text[] not null default '{}',
   submitted_at timestamptz,
   reviewed_by uuid references public.profiles(id) on delete set null,
   reviewed_at timestamptz,
@@ -247,6 +248,7 @@ alter table public.weekly_timesheets add column if not exists approval_comment t
 alter table public.weekly_timesheets add column if not exists status_history jsonb not null default '[]'::jsonb;
 alter table public.weekly_timesheets add column if not exists conflict_flags jsonb not null default '[]'::jsonb;
 alter table public.weekly_timesheets add column if not exists has_conflict boolean not null default false;
+alter table public.weekly_timesheets add column if not exists approved_days text[] not null default '{}';
 alter table public.weekly_timesheets add column if not exists submitted_at timestamptz;
 alter table public.weekly_timesheets add column if not exists reviewed_by uuid references public.profiles(id) on delete set null;
 alter table public.weekly_timesheets add column if not exists reviewed_at timestamptz;

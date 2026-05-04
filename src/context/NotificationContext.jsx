@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
 import { useAuth } from './AuthContext';
 
@@ -8,7 +8,7 @@ export function NotificationProvider({ children }) {
   const { user, profile } = useAuth();
   const [pendingCounts, setPendingCounts] = useState({ expenses: 0, leaves: 0, timesheets: 0 });
 
-  async function fetchCounts() {
+  const fetchCounts = useCallback(async () => {
     if (!user || profile?.role !== 'admin') return;
 
     const [expRes, leaveRes, sheetRes] = await Promise.all([
@@ -22,7 +22,7 @@ export function NotificationProvider({ children }) {
       leaves: leaveRes.count || 0,
       timesheets: sheetRes.count || 0
     });
-  }
+  }, [user, profile?.role]);
 
   useEffect(() => {
     if (!user || profile?.role !== 'admin') return;

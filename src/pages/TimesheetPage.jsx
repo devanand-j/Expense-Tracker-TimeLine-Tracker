@@ -108,6 +108,8 @@ export default function TimesheetPage() {
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
   const [isDirty, setIsDirty] = useState(false);
+  const [filters, setFilters] = useState({ status: '' });
+  const showTimesheet = !filters.status || sheetStatus === filters.status;
 
   const weekStart = useMemo(() => startOfWeek(new Date(selectedDate)), [selectedDate]);
   const weekStartKey = useMemo(() => formatDateKey(weekStart), [weekStart]);
@@ -178,23 +180,12 @@ export default function TimesheetPage() {
         setStatusHistory(Array.isArray(data.status_history) ? data.status_history : []);
         setConflictFlags(Array.isArray(data.conflict_flags) ? data.conflict_flags : []);
 
-        // Build per-day approved set from ALL approved sheets for this user
-        if (data.status === 'approved') {
-          const days = new Set();
-          const WEEK_DAYS_ORDER = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
-          (data.rows || []).forEach((row) => {
-            WEEK_DAYS_ORDER.forEach((dayKey, idx) => {
-              if (Number(row[dayKey] || 0) > 0) {
-                const date = new Date(`${weekStartKey}T00:00:00`);
-                date.setDate(date.getDate() + idx);
-                days.add(formatDateKey(date));
-              }
-            });
-          });
-          setApprovedDays(days);
-        } else {
-          setApprovedDays(new Set());
+        // Load approved_days from database
+        const appDays = new Set();
+        if (Array.isArray(data.approved_days)) {
+          data.approved_days.forEach((dateStr) => appDays.add(dateStr));
         }
+        setApprovedDays(appDays);
       } else {
         setSheetId(null);
         setRows([createEmptyRow()]);
@@ -448,65 +439,74 @@ export default function TimesheetPage() {
         </div>
       </div>
 
-      <div className="card flex flex-col gap-4 p-5 lg:flex-row lg:items-end lg:justify-between">
-        <label className="space-y-2 text-sm font-medium">
-          <span>Select Week</span>
-          <input
-            type="date"
-            value={selectedDate}
-            onChange={(event) => setSelectedDate(event.target.value)}
-            className="w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]"
-          />
-        </label>
+      <div className="card space-y-4 p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <label className="space-y-2 text-sm font-medium">
+            <span>Select Week</span>
+            <input
+              type="date"
+              value={selectedDate}
+              onChange={(event) => setSelectedDate(event.target.value)}
+              className="w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]"
+            />
+          </label>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => setSelectedDate(formatDateKey(new Date()))}
+            >
+              Current Week
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => {
+                const next = new Date(weekStart);
+                next.setDate(next.getDate() - 7);
+                setSelectedDate(formatDateKey(next));
+              }}
+            >
+              Previous Week
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              onClick={() => {
+                const next = new Date(weekStart);
+                next.setDate(next.getDate() + 7);
+                setSelectedDate(formatDateKey(next));
+              }}
+              disabled={!isFutureWeek && weekStartKey >= formatDateKey(new Date())}
+            >
+              Next Week
+            </button>
+          </div>
+        </div>
 
         <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={() => setSelectedDate(formatDateKey(new Date()))}
-          >
-            Current Week
-          </button>
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={() => {
-              const next = new Date(weekStart);
-              next.setDate(next.getDate() - 7);
-              setSelectedDate(formatDateKey(next));
-            }}
-          >
-            Previous Week
-          </button>
-          <button
-            type="button"
-            className="btn-secondary"
-            onClick={() => {
-              const next = new Date(weekStart);
-              next.setDate(next.getDate() + 7);
-              setSelectedDate(formatDateKey(next));
-            }}
-            disabled={!isFutureWeek && weekStartKey >= formatDateKey(new Date())}
-          >
-            Next Week
+          <select className="field dark:border-slate-600 dark:bg-slate-700 dark:text-white" value={filters.status} onChange={(e) => setFilters((x) => ({ ...x, status: e.target.value }))}>
+            <option value="">All Statuses</option>
+            <option value="draft">Draft</option>
+            <option value="submitted">Submitted</option>
+            <option value="under_review">Under Review</option>
+            <option value="needs_changes">Needs Changes</option>
+            <option value="approved">Approved</option>
+            <option value="rejected">Rejected</option>
+          </select>
+          <button className="btn-secondary flex items-center justify-center gap-2 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600" onClick={() => setFilters({ status: '' })}>
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+            Clear
           </button>
         </div>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-3">
-        <div className="card p-5">
-          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Week</p>
-          <p className="mt-2 text-lg font-bold tracking-tight text-slate-800 dark:text-slate-100">{formatWeekLabel(weekStart)}</p>
+      {filters.status && !showTimesheet ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:border-amber-900/40 dark:bg-amber-900/10 dark:text-amber-300">
+          No timesheet matches the selected status filter.
         </div>
-        <div className="card p-5">
-          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Total Hours</p>
-          <p className="mt-2 text-lg font-bold tracking-tight text-teal">{totalHours.toFixed(2)}h</p>
-        </div>
-        <div className="card p-5">
-          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Filled Days</p>
-          <p className="mt-2 text-lg font-bold tracking-tight text-slate-800 dark:text-slate-100">{filledDays}/7</p>
-        </div>
-      </div>
+      ) : null}
 
       {isFutureWeek ? (
         <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700 dark:border-amber-900/40 dark:bg-amber-900/10 dark:text-amber-300">
@@ -514,8 +514,9 @@ export default function TimesheetPage() {
         </div>
       ) : null}
 
-      <section className={`card space-y-5 border p-4 md:p-6 ${boardToneClass}`}>
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+      {showTimesheet && (
+        <section className={`card space-y-5 border p-4 md:p-6 ${boardToneClass}`}>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wider text-slate-500">Weekly Rows</p>
             <h2 className="mt-1 text-xl font-bold tracking-tight text-ink dark:text-white">Project Breakdown</h2>
@@ -658,9 +659,28 @@ export default function TimesheetPage() {
             );
           })}
         </div>
-      </section>
+        </section>
+      )}
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      {showTimesheet && (
+        <div className="grid gap-4 sm:grid-cols-3">
+          <div className="card p-5">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Week</p>
+            <p className="mt-2 text-lg font-bold tracking-tight text-slate-800 dark:text-slate-100">{formatWeekLabel(weekStart)}</p>
+          </div>
+          <div className="card p-5">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Total Hours</p>
+            <p className="mt-2 text-lg font-bold tracking-tight text-teal">{totalHours.toFixed(2)}h</p>
+          </div>
+          <div className="card p-5">
+            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Filled Days</p>
+            <p className="mt-2 text-lg font-bold tracking-tight text-slate-800 dark:text-slate-100">{filledDays}/7</p>
+          </div>
+        </div>
+      )}
+
+      {showTimesheet && (
+        <div className="flex flex-wrap items-center justify-between gap-3">
         <button type="button" className="btn-secondary" onClick={addRow} disabled={!editableByEmployee}>
           + Add Row
         </button>
@@ -674,7 +694,8 @@ export default function TimesheetPage() {
             Get Approval
           </button>
         </div>
-      </div>
+        </div>
+      )}
 
       <div className="sm:hidden">
         <div className="fixed inset-x-0 bottom-0 z-40 border-t border-slate-200 bg-white/95 px-3 pt-3 pb-[calc(0.75rem+env(safe-area-inset-bottom))] backdrop-blur dark:border-slate-700 dark:bg-slate-900/95">

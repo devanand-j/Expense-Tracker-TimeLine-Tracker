@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
+import toast from 'react-hot-toast';
 import StatCard from '../components/StatCard';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
@@ -16,19 +17,6 @@ function ChartTooltip({ active, payload, label, dark }) {
       <p className="mt-1 text-sm font-bold">₹{Number(payload[0].value).toFixed(2)}</p>
     </div>
   );
-}
-
-function inCurrentWeek(dateStr) {
-  const now = new Date();
-  const first = new Date(now);
-  const day = now.getDay();
-  const diff = now.getDate() - day + (day === 0 ? -6 : 1);
-  first.setDate(diff);
-  first.setHours(0, 0, 0, 0);
-  const end = new Date(first);
-  end.setDate(first.getDate() + 7);
-  const date = new Date(dateStr);
-  return date >= first && date < end;
 }
 
 function toDateKey(value) {
@@ -58,14 +46,23 @@ function buildMonthCalendar(dateValue) {
   return { monthStart, monthEnd, days };
 }
 
-function dayCellTone({ hours, approvedExpense, isLeave, pendingCount }) {
-  if (isLeave) return 'bg-violet-100 text-violet-800 dark:bg-violet-700/60 dark:text-violet-100';
-  if (pendingCount > 0) return 'bg-amber-100 text-amber-800 dark:bg-amber-600/60 dark:text-amber-100';
-  if (approvedExpense > 0 && hours > 0) return 'bg-emerald-100 text-emerald-800 dark:bg-emerald-600/60 dark:text-emerald-100';
-  if (hours >= 8) return 'bg-teal-100 text-teal-800 dark:bg-teal-600/60 dark:text-teal-100';
-  if (hours > 0) return 'bg-sky-100 text-sky-800 dark:bg-sky-600/60 dark:text-sky-100';
-  if (approvedExpense > 0) return 'bg-lime-100 text-lime-800 dark:bg-lime-600/60 dark:text-lime-100';
-  return 'bg-slate-100 text-slate-600 dark:bg-slate-700/50 dark:text-slate-300';
+function dayCellTone({ isLeave, isApprovedTimesheet }) {
+  if (isApprovedTimesheet && isLeave) {
+    return {
+      background: 'linear-gradient(135deg, #7aeb80 50%, #db3050 50%)',
+      color: '#111827'
+    };
+  }
+
+  if (isLeave) {
+    return { background: '#db3050', color: '#ffffff' };
+  }
+
+  if (isApprovedTimesheet) {
+    return { background: '#7aeb80', color: '#111827' };
+  }
+
+  return { background: '#5a82fa', color: '#ffffff' };
 }
 
 function isMissingSchemaTable(error, tableName) {
@@ -146,25 +143,59 @@ export default function DashboardPage() {
   }, [user.id]);
 
   const metrics = useMemo(() => {
-    const weeklyTimeline = timeline.filter((x) => inCurrentWeek(x.date));
-    const weeklyExpenses = expenses.filter((x) => x.status === 'approved' && inCurrentWeek(x.date));
-    const month = new Date().getMonth();
+    const now = new Date();
+    const month = now.getMonth();
+    const year = now.getFullYear();
 
-    const monthlyTimeline = timeline.filter((x) => new Date(x.date).getMonth() === month);
-    const monthlyExpenses = expenses.filter((x) => x.status === 'approved' && new Date(x.date).getMonth() === month);
+    // Week boundaries (Mon–Sun) as date strings for safe comparison
+    const day = now.getDay();
+    const mondayOffset = day === 0 ? -6 : 1 - day;
+    const monday = new Date(now);
+    monday.setDate(now.getDate() + mondayOffset);
+    monday.setHours(0, 0, 0, 0);
+    const weekStartKey = toDateKey(monday);
+    const weekEndKey = toDateKey(now);
 
-    const weeklyHours = weeklyTimeline.reduce(
-      (sum, entry) => sum + (entry.duration || calculateDurationHours(entry.start_time, entry.end_time)),
-      0
-    );
+    // Month boundaries as date strings
+    const monthStartKey = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+    const monthEndKey = toDateKey(now);
 
-    const monthlyHours = monthlyTimeline.reduce(
-      (sum, entry) => sum + (entry.duration || calculateDurationHours(entry.start_time, entry.end_time)),
-      0
-    );
+    // Year boundaries - last 1 year of data
+    const yearAgoDate = new Date(now);
+    yearAgoDate.setFullYear(yearAgoDate.getFullYear() - 1);
+    const yearStartKey = toDateKey(yearAgoDate);
+    const yearEndKey = toDateKey(now);
+
+    // --- Hours from weekly_timesheets rows ---
+    const DAY_KEYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+
+    let weeklyHours = 0;
+    let monthlyHours = 0;
+    let yearlyHours = 0;
+
+    weeklySheets.forEach((sheet) => {
+      if (sheet.status !== 'approved') return;
+      if (!sheet.week_start || !Array.isArray(sheet.rows)) return;
+      DAY_KEYS.forEach((dayKey, idx) => {
+        const date = new Date(`${sheet.week_start}T00:00:00`);
+        date.setDate(date.getDate() + idx);
+        const dateKey = toDateKey(date);
+        const dayHours = sheet.rows.reduce((sum, row) => sum + Number(row[dayKey] || 0), 0);
+        if (dayHours <= 0) return;
+        if (dateKey >= weekStartKey && dateKey <= weekEndKey) weeklyHours += dayHours;
+        if (dateKey >= monthStartKey && dateKey <= monthEndKey) monthlyHours += dayHours;
+        if (dateKey >= yearStartKey && dateKey <= yearEndKey) yearlyHours += dayHours;
+      });
+    });
+
+    // --- Expenses (approved only, date-string comparison to avoid timezone issues) ---
+    const weeklyExpenses = expenses.filter((x) => x.status === 'approved' && x.date >= weekStartKey && x.date <= weekEndKey);
+    const monthlyExpenses = expenses.filter((x) => x.status === 'approved' && x.date >= monthStartKey && x.date <= monthEndKey);
+    const yearlyExpenses = expenses.filter((x) => x.status === 'approved' && x.date >= yearStartKey && x.date <= yearEndKey);
 
     const weeklyExpenseTotal = weeklyExpenses.reduce((sum, item) => sum + Number(item.amount), 0);
     const monthlyExpenseTotal = monthlyExpenses.reduce((sum, item) => sum + Number(item.amount), 0);
+    const yearlyExpenseTotal = yearlyExpenses.reduce((sum, item) => sum + Number(item.amount), 0);
 
     const byCategory = monthlyExpenses.reduce((acc, item) => {
       categoryShareRows(item).forEach((row) => {
@@ -180,9 +211,11 @@ export default function DashboardPage() {
       weeklyExpenseTotal: weeklyExpenseTotal.toFixed(2),
       monthlyHours: monthlyHours.toFixed(2),
       monthlyExpenseTotal: monthlyExpenseTotal.toFixed(2),
+      yearlyHours: yearlyHours.toFixed(2),
+      yearlyExpenseTotal: yearlyExpenseTotal.toFixed(2),
       categoryData
     };
-  }, [timeline, expenses]);
+  }, [weeklySheets, expenses]);
 
   const heatmap = useMemo(() => {
     const now = new Date();
@@ -197,6 +230,7 @@ export default function DashboardPage() {
         hours: 0,
         approvedExpense: 0,
         isLeave: false,
+        isApprovedTimesheet: false,
         pendingCount: 0
       }])
     );
@@ -206,6 +240,23 @@ export default function DashboardPage() {
       const target = dayMap.get(dateKey);
       if (!target || !inMonth(dateKey)) return;
       target.hours += Number(entry.duration || calculateDurationHours(entry.start_time, entry.end_time));
+    });
+
+    // Aggregate approved timesheet hours per day into heatmap
+    const DAY_KEYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    weeklySheets.forEach((sheet) => {
+      if (sheet.status !== 'approved') return;
+      if (!sheet.week_start || !Array.isArray(sheet.rows)) return;
+      DAY_KEYS.forEach((dayKey, idx) => {
+        const date = new Date(`${sheet.week_start}T00:00:00`);
+        date.setDate(date.getDate() + idx);
+        const dateKey = toDateKey(date);
+        const target = dayMap.get(dateKey);
+        if (!target || !inMonth(dateKey)) return;
+        const dayHours = sheet.rows.reduce((sum, row) => sum + Number(row[dayKey] || 0), 0);
+        target.hours += dayHours;
+        if (dayHours > 0) target.isApprovedTimesheet = true;
+      });
     });
 
     expenses.forEach((entry) => {
@@ -282,6 +333,13 @@ export default function DashboardPage() {
           icon={<svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>} />
       </div>
 
+      <div className="grid gap-4 md:grid-cols-2">
+        <StatCard title="Yearly Hours" value={`${metrics.yearlyHours}h`} accent="green"
+          icon={<svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>} />
+        <StatCard title="Yearly Approved Expenses" value={`₹${metrics.yearlyExpenseTotal}`} accent="indigo"
+          icon={<svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>} />
+      </div>
+
       <div className="card p-5">
         <div className="section-header">
           <h2 className="section-title">Monthly Category Breakdown</h2>
@@ -351,9 +409,10 @@ export default function DashboardPage() {
               key={cell.dateKey}
               className={`min-h-[68px] rounded-xl p-2 text-xs transition-all duration-150 hover:scale-105 hover:shadow-md cursor-default ${
                 cell.inCurrentMonth
-                  ? dayCellTone(cell)
+                  ? ''
                   : 'bg-slate-50 text-slate-200 dark:bg-slate-800/30 dark:text-slate-700'
               }`}
+              style={cell.inCurrentMonth ? dayCellTone(cell) : undefined}
               title={`${cell.dateKey} | ${cell.hours}h | ₹${cell.approvedExpense} | Leave: ${cell.isLeave ? 'Yes' : 'No'}`}
             >
               <div className="font-bold">{cell.day}</div>

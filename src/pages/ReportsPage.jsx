@@ -353,6 +353,7 @@ export default function ReportsPage() {
   const [timeline, setTimeline] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [profiles, setProfiles] = useState([]);
+  const [weeklySheets, setWeeklySheets] = useState([]);
   const [downloads, setDownloads] = useState([]);
   const [dbProjects, setDbProjects] = useState([]);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('all');
@@ -374,15 +375,20 @@ export default function ReportsPage() {
         ? supabase.from('expenses').select('*, profiles(name)')
         : supabase.from('expenses').select('*, profiles(name)').eq('user_id', user.id);
 
+      const weeklyQuery = profile?.role === 'admin'
+        ? supabase.from('weekly_timesheets').select('*').eq('status', 'approved')
+        : supabase.from('weekly_timesheets').select('*').eq('user_id', user.id).eq('status', 'approved');
+
       const profileQuery = profile?.role === 'admin'
-        ? supabase.from('profiles').select('id, name').order('name', { ascending: true })
+        ? supabase.from('profiles').select('id, name').eq('role', 'employee').order('name', { ascending: true })
         : Promise.resolve({ data: [{ id: user.id, name: 'Me' }], error: null });
 
       const projectQuery = supabase.from('projects').select('name').eq('is_active', true).order('name', { ascending: true });
 
-      const [timelineRes, expenseRes, profileRes, projectRes] = await Promise.all([
+      const [timelineRes, expenseRes, weeklyRes, profileRes, projectRes] = await Promise.all([
         timelineQuery,
         expenseQuery,
+        weeklyQuery,
         profileQuery,
         projectQuery
       ]);
@@ -393,6 +399,7 @@ export default function ReportsPage() {
 
       setTimeline(timelineRes.data || []);
       setExpenses(expenseRes.data || []);
+      setWeeklySheets(weeklyRes.error ? [] : (weeklyRes.data || []));
       setProfiles(profileRes.data || []);
       setDbProjects((projectRes.data || []).map((p) => p.name));
 
@@ -427,15 +434,40 @@ export default function ReportsPage() {
 
   const monthlyReport = useMemo(() => {
     const now = new Date();
-    const month = now.getMonth();
-    const monthlyTimeline = filteredTimeline.filter((x) => new Date(x.date).getMonth() === month);
-    const monthlyExpenses = filteredExpenses.filter((x) => new Date(x.date).getMonth() === month);
+    const monthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    // Use string comparison to avoid UTC timezone off-by-one
+    const monthlyExpenses = filteredExpenses.filter((x) => String(x.date || '').slice(0, 7) === monthKey);
 
-    const totalHours = monthlyTimeline.reduce(
+    // Hours from timeline_entries
+    const monthlyTimeline = filteredTimeline.filter((x) => String(x.date || '').slice(0, 7) === monthKey);
+    let timelineHours = monthlyTimeline.reduce(
       (sum, entry) => sum + Number(entry.duration || calculateDurationHours(entry.start_time, entry.end_time)),
       0
     );
 
+    // Hours from weekly_timesheets (approved only)
+    const DAY_KEYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    const monthStartKey = `${monthKey}-01`;
+    const monthEndKey = toInputDate(now);
+    let sheetHours = 0;
+
+    weeklySheets.forEach((sheet) => {
+      if (sheet.status !== 'approved') return;
+      if (selectedEmployeeId !== 'all' && sheet.user_id !== selectedEmployeeId) return;
+      if (!sheet.week_start || !Array.isArray(sheet.rows)) return;
+
+      DAY_KEYS.forEach((dayKey, idx) => {
+        const date = new Date(`${sheet.week_start}T00:00:00`);
+        date.setDate(date.getDate() + idx);
+        const dateKey = toInputDate(date);
+        if (dateKey >= monthStartKey && dateKey <= monthEndKey) {
+          const dayHours = sheet.rows.reduce((sum, row) => sum + Number(row[dayKey] || 0), 0);
+          sheetHours += dayHours;
+        }
+      });
+    });
+
+    const totalHoursNum = timelineHours + sheetHours;
     const totalExpenses = monthlyExpenses.reduce((sum, item) => sum + Number(item.amount), 0);
 
     const byCategory = monthlyExpenses.reduce((acc, item) => {
@@ -451,17 +483,48 @@ export default function ReportsPage() {
     }, {});
 
     return {
-      totalHours: totalHours.toFixed(2),
+      totalHours: totalHoursNum.toFixed(2),
       totalExpenses: totalExpenses.toFixed(2),
       byCategory,
       byStatus
     };
   }, [filteredTimeline, filteredExpenses]);
 
-  const rangeSummary = useMemo(
-    () => buildRangeSummary(filteredTimeline, filteredExpenses, rangeStart, rangeEnd),
-    [filteredTimeline, filteredExpenses, rangeStart, rangeEnd]
-  );
+  const rangeSummary = useMemo(() => {
+    // Combine timeline entries with weekly_timesheets entries for calculation
+    const combinedTimeline = [...filteredTimeline];
+    
+    // Add weekly_timesheets data as timeline entries
+    const DAY_KEYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    weeklySheets.forEach((sheet) => {
+      if (sheet.status !== 'approved') return;
+      if (selectedEmployeeId !== 'all' && sheet.user_id !== selectedEmployeeId) return;
+      if (!sheet.week_start || !Array.isArray(sheet.rows)) return;
+
+      DAY_KEYS.forEach((dayKey, idx) => {
+        const date = new Date(`${sheet.week_start}T00:00:00`);
+        date.setDate(date.getDate() + idx);
+        const dateKey = toInputDate(date);
+        
+        sheet.rows.forEach((row) => {
+          const hours = Number(row[dayKey] || 0);
+          if (hours > 0) {
+            combinedTimeline.push({
+              date: dateKey,
+              duration: hours,
+              project: row.project || 'Unassigned',
+              start_time: '00:00',
+              end_time: '00:00',
+              type: 'timesheet',
+              user_id: sheet.user_id
+            });
+          }
+        });
+      });
+    });
+
+    return buildRangeSummary(combinedTimeline, filteredExpenses, rangeStart, rangeEnd);
+  }, [filteredTimeline, filteredExpenses, weeklySheets, selectedEmployeeId, rangeStart, rangeEnd]);
 
   const projectRows = useMemo(() => {
     const map = new Map();

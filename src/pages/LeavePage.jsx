@@ -6,7 +6,7 @@ import { supabase } from '../lib/supabaseClient';
 
 const LEAVE_TYPES = [
   { value: 'SL', label: 'Sick Leave (SL)' },
-  { value: 'Planned Leave', label: 'Planned Leave' }
+  { value: 'CL', label: 'Casual Leave (CL)' }
 ];
 
 const STATUS_STYLES = {
@@ -59,6 +59,12 @@ export default function LeavePage() {
   const [saving, setSaving] = useState(false);
   const [historyPreview, setHistoryPreview] = useState(null);
   const [timesheetConflicts, setTimesheetConflicts] = useState(new Set());
+  const [filters, setFilters] = useState({ status: '' });
+
+  const filtered = useMemo(() => {
+    if (!filters.status) return items;
+    return items.filter((item) => item.status === filters.status);
+  }, [items, filters.status]);
 
   async function fetchLeaves() {
     const { data, error } = await supabase
@@ -337,6 +343,20 @@ export default function LeavePage() {
         <button className="btn-primary" onClick={openAdd} disabled={tableUnavailable}>Request Leave</button>
       </div>
 
+      <div className="card flex flex-wrap gap-2 p-4">
+        <select className="field dark:border-slate-600 dark:bg-slate-700 dark:text-white" value={filters.status} onChange={(e) => setFilters((x) => ({ ...x, status: e.target.value }))}>
+          <option value="">All Statuses</option>
+          <option value="pending">Pending</option>
+          <option value="approved">Approved</option>
+          <option value="rejected">Rejected</option>
+          <option value="cancelled">Cancelled</option>
+        </select>
+        <button className="btn-secondary flex items-center justify-center gap-2 dark:bg-slate-700 dark:text-slate-300 dark:hover:bg-slate-600" onClick={() => setFilters({ status: '' })}>
+          <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+          Clear
+        </button>
+      </div>
+
       <div className="grid gap-4 md:grid-cols-3">
         <div className="card p-4">
           <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Pending</p>
@@ -367,7 +387,7 @@ export default function LeavePage() {
             </tr>
           </thead>
           <tbody>
-            {items.map((item) => {
+            {filtered.map((item) => {
               const editable = ['pending', 'rejected'].includes(item.status);
               const removable = ['pending', 'rejected', 'cancelled'].includes(item.status);
               return (
@@ -424,9 +444,9 @@ export default function LeavePage() {
                 </tr>
               );
             })}
-            {!items.length ? (
+            {!filtered.length ? (
               <tr>
-                <td colSpan={8} className="py-4 text-center text-slate-500">No leave requests yet.</td>
+                <td colSpan={8} className="py-4 text-center text-slate-500">No leave requests match the selected filter.</td>
               </tr>
             ) : null}
           </tbody>

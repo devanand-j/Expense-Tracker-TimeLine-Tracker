@@ -3,8 +3,18 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import Modal from '../components/Modal';
+import AdminOverview from './AdminOverview';
 import { categoryShareRows, formatExpenseCategoryList } from '../lib/expenseCategories';
 import { buildRangeSummary } from '../lib/reporting';
+import {
+  normalizeStatusHistory,
+  formatHistoryDate,
+  isMissingSchemaTable,
+  getHoursSince,
+  slugify,
+  normalizeConflictFlags,
+  formatSlaDuration
+} from '../lib/adminHelpers';
 import { exportReportAsPdfAndUpload, exportReportAsXlsxAndUpload } from '../lib/export';
 import { supabase } from '../lib/supabaseClient';
 import { calculateDurationHours } from '../lib/time';
@@ -47,55 +57,6 @@ function toInputDate(dateValue) {
   return `${year}-${month}-${day}`;
 }
 
-function slugify(value = '') {
-  return value
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
-function normalizeStatusHistory(value) {
-  if (!Array.isArray(value)) return [];
-  return [...value].sort((a, b) => new Date(b.changed_at) - new Date(a.changed_at));
-}
-
-function formatHistoryDate(value) {
-  if (!value) return '-';
-  const dt = new Date(value);
-  const day = String(dt.getDate()).padStart(2, '0');
-  const month = dt.toLocaleString('en-US', { month: 'short' });
-  const year = dt.getFullYear();
-  const hours = dt.getHours() % 12 || 12;
-  const mins = String(dt.getMinutes()).padStart(2, '0');
-  const suffix = dt.getHours() >= 12 ? 'PM' : 'AM';
-  return `${day}-${month}-${year} ${String(hours).padStart(2, '0')}:${mins} ${suffix}`;
-}
-
-function getHoursSince(value) {
-  if (!value) return 0;
-  const diffMs = Date.now() - new Date(value).getTime();
-  return Math.max(0, diffMs / (1000 * 60 * 60));
-}
-
-function formatSlaDuration(hours) {
-  const safeHours = Math.max(0, Number(hours || 0));
-  const wholeHours = Math.floor(safeHours);
-  const days = Math.floor(wholeHours / 24);
-  const remHours = wholeHours % 24;
-  if (days > 0) return `${days}d ${remHours}h`;
-  return `${remHours}h`;
-}
-
-function normalizeConflictFlags(value) {
-  if (!Array.isArray(value)) return [];
-  return value.filter(Boolean);
-}
-
-function isMissingSchemaTable(error, tableName) {
-  const msg = String(error?.message || '').toLowerCase();
-  return msg.includes('could not find the table') && msg.includes(String(tableName || '').toLowerCase());
-}
-
 export default function AdminPage() {
   const { user, profile } = useAuth();
   const [employees, setEmployees] = useState([]);
@@ -110,6 +71,8 @@ export default function AdminPage() {
   const [weeklySheets, setWeeklySheets] = useState([]);
   const [reimbursements, setReimbursements] = useState([]);
   const [expenseStatusFilter, setExpenseStatusFilter] = useState('all');
+  const [timesheetStatusFilter, setTimesheetStatusFilter] = useState('all');
+  const [leaveStatusFilter, setLeaveStatusFilter] = useState('all');
   const [statusAction, setStatusAction] = useState(null);
   const [statusComment, setStatusComment] = useState('');
   const [timesheetAction, setTimesheetAction] = useState(null);
@@ -122,7 +85,7 @@ export default function AdminPage() {
   const [reimbursementForm, setReimbursementForm] = useState({ payment_mode: 'bank_transfer', transaction_reference: '' });
   const [unrecognizedProjects, setUnrecognizedProjects] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [adminTab, setAdminTab] = useState('timesheet'); // 'timesheet' | 'leave' | 'expenses' | 'projects'
+  const [adminTab, setAdminTab] = useState('timesheet');
   const [bulkSelected, setBulkSelected] = useState(new Set());
   const [bulkApproving, setBulkApproving] = useState(false);
   const [rangeStart, setRangeStart] = useState(() => {
@@ -147,6 +110,13 @@ export default function AdminPage() {
   }
 
   async function loadEmployeeData(employeeId) {
+    // Calculate year-long range for expenses
+    const now = new Date();
+    const yearAgo = new Date(now);
+    yearAgo.setFullYear(yearAgo.getFullYear() - 1);
+    const expenseRangeStart = toInputDate(yearAgo);
+    const expenseRangeEnd = toInputDate(now);
+
     const [timelineRes, expenseRes, leaveRes, weeklyRes, reimbursementRes] = await Promise.all([
       supabase
         .from('timeline_entries')
@@ -159,8 +129,8 @@ export default function AdminPage() {
         .from('expenses')
         .select('*')
         .eq('user_id', employeeId)
-        .gte('date', rangeStart)
-        .lte('date', rangeEnd)
+        .gte('date', expenseRangeStart)
+        .lte('date', expenseRangeEnd)
         .order('date', { ascending: false }),
       supabase
         .from('leave_requests')
@@ -242,7 +212,6 @@ export default function AdminPage() {
     setProjects(projectRes.data || []);
     setProjectAssignments(assignmentRes.data || []);
 
-    // Load unrecognized projects from localStorage
     const customProjects = loadCustomProjects();
     const officialProjectNames = new Set((projectRes.data || []).map((p) => p.name));
     const unrecognized = customProjects.filter((name) => !officialProjectNames.has(name));
@@ -443,22 +412,38 @@ export default function AdminPage() {
   }, [projects, projectAssignments, employeeNameById]);
 
   const summary = useMemo(() => {
-    const weeklyTimeline = timeline.filter((entry) => inCurrentWeek(entry.date));
-    const weeklyExpenses = expenses.filter((entry) => entry.status === 'approved' && inCurrentWeek(entry.date));
-    const month = new Date().getMonth();
+    const now = new Date();
+    const month = now.getMonth();
+    const year = now.getFullYear();
+    const day = now.getDay();
+    const mondayOffset = day === 0 ? -6 : 1 - day;
+    const monday = new Date(now);
+    monday.setDate(now.getDate() + mondayOffset);
+    monday.setHours(0, 0, 0, 0);
+    const weekStartKey = toInputDate(monday);
+    const weekEndKey = toInputDate(now);
+    const monthStartKey = `${year}-${String(month + 1).padStart(2, '0')}-01`;
+    const monthEndKey = toInputDate(now);
 
-    const monthlyTimeline = timeline.filter((entry) => new Date(entry.date).getMonth() === month);
-    const monthlyExpenses = expenses.filter((entry) => entry.status === 'approved' && new Date(entry.date).getMonth() === month);
+    const DAY_KEYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    let weeklyHours = 0;
+    let monthlyHours = 0;
 
-    const weeklyHours = weeklyTimeline.reduce(
-      (sum, entry) => sum + Number(entry.duration || calculateDurationHours(entry.start_time, entry.end_time)),
-      0
-    );
+    weeklySheets.forEach((sheet) => {
+      if (!sheet.week_start || !Array.isArray(sheet.rows)) return;
+      DAY_KEYS.forEach((dayKey, idx) => {
+        const date = new Date(`${sheet.week_start}T00:00:00`);
+        date.setDate(date.getDate() + idx);
+        const dateKey = toInputDate(date);
+        const dayHours = sheet.rows.reduce((sum, row) => sum + Number(row[dayKey] || 0), 0);
+        if (dayHours <= 0) return;
+        if (dateKey >= weekStartKey && dateKey <= weekEndKey) weeklyHours += dayHours;
+        if (dateKey >= monthStartKey && dateKey <= monthEndKey) monthlyHours += dayHours;
+      });
+    });
 
-    const monthlyHours = monthlyTimeline.reduce(
-      (sum, entry) => sum + Number(entry.duration || calculateDurationHours(entry.start_time, entry.end_time)),
-      0
-    );
+    const weeklyExpenses = expenses.filter((entry) => entry.status === 'approved' && entry.date >= weekStartKey && entry.date <= weekEndKey);
+    const monthlyExpenses = expenses.filter((entry) => entry.status === 'approved' && entry.date >= monthStartKey && entry.date <= monthEndKey);
 
     const weeklyExpenseTotal = weeklyExpenses.reduce((sum, entry) => sum + Number(entry.amount), 0);
     const monthlyExpenseTotal = monthlyExpenses.reduce((sum, entry) => sum + Number(entry.amount), 0);
@@ -479,12 +464,22 @@ export default function AdminPage() {
       monthlyExpenseTotal: monthlyExpenseTotal.toFixed(2),
       categoryData
     };
-  }, [timeline, expenses]);
+  }, [weeklySheets, expenses]);
 
   const filteredExpenses = useMemo(() => {
     if (expenseStatusFilter === 'all') return expenses;
     return expenses.filter((entry) => entry.status === expenseStatusFilter);
   }, [expenses, expenseStatusFilter]);
+
+  const filteredWeeklySheets = useMemo(() => {
+    if (timesheetStatusFilter === 'all') return weeklySheets;
+    return weeklySheets.filter((s) => s.status === timesheetStatusFilter);
+  }, [weeklySheets, timesheetStatusFilter]);
+
+  const filteredLeaveRequests = useMemo(() => {
+    if (leaveStatusFilter === 'all') return leaveRequests;
+    return leaveRequests.filter((r) => r.status === leaveStatusFilter);
+  }, [leaveRequests, leaveStatusFilter]);
 
   const expenseStatusCounts = useMemo(
     () => ({
@@ -598,49 +593,6 @@ export default function AdminPage() {
     setBulkSelected(new Set());
     loadEmployeeData(selectedEmployeeId);
   };
-
-  // #4: Team view — all employees × date range daily hours
-  const [teamData, setTeamData] = useState([]);
-  const [teamLoading, setTeamLoading] = useState(false);
-
-  async function loadTeamView() {
-    setTeamLoading(true);
-    const { data, error } = await supabase
-      .from('weekly_timesheets')
-      .select('user_id, week_start, rows, status')
-      .gte('week_start', rangeStart)
-      .lte('week_start', rangeEnd);
-    setTeamLoading(false);
-    if (error) { toast.error(error.message); return; }
-
-    const WEEK_DAYS_ORDER = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
-    const byEmployee = new Map();
-    (data || []).forEach((sheet) => {
-      if (!byEmployee.has(sheet.user_id)) byEmployee.set(sheet.user_id, {});
-      const dayMap = byEmployee.get(sheet.user_id);
-      (sheet.rows || []).forEach((row) => {
-        WEEK_DAYS_ORDER.forEach((dayKey, idx) => {
-          const hours = Number(row[dayKey] || 0);
-          if (hours <= 0) return;
-          const d = new Date(`${sheet.week_start}T00:00:00`);
-          d.setDate(d.getDate() + idx);
-          const dateKey = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-          dayMap[dateKey] = (dayMap[dateKey] || 0) + hours;
-        });
-      });
-    });
-
-    const rows = employees.map((emp) => ({
-      id: emp.id,
-      name: emp.name,
-      dayMap: byEmployee.get(emp.id) || {}
-    }));
-    setTeamData(rows);
-  }
-
-  useEffect(() => {
-    if (adminTab === 'projects' && employees.length) void loadTeamView();
-  }, [adminTab, rangeStart, rangeEnd, employees]);
 
   const exportEmployeePdf = async () => {
     try {
@@ -977,7 +929,7 @@ export default function AdminPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold">Admin Panel</h1>
+          <h1 className="text-2xl font-bold">Admin Hub</h1>
           <p className="text-sm text-slate-500 dark:text-slate-400">
             Logged in as <span className="font-semibold text-ink dark:text-white">{profile?.name}</span> · Select an employee to view timelines, reports, expenses, and leave requests.
           </p>
@@ -1001,13 +953,12 @@ export default function AdminPage() {
         </div>
       </div>
 
-      {/* Tab switcher */}
       <div className="flex flex-wrap gap-2">
         {[
+          { key: 'overview', label: 'Overview' },
           { key: 'timesheet', label: 'Timesheet' },
           { key: 'leave', label: 'Leave' },
-          { key: 'expenses', label: 'Expenses' },
-          { key: 'projects', label: 'Projects' },
+          { key: 'expenses', label: 'Expenses' }
         ].map(({ key, label }) => (
           <button
             key={key}
@@ -1024,171 +975,31 @@ export default function AdminPage() {
         ))}
       </div>
 
-      {/* Projects Tab */}
-      {adminTab === 'projects' ? (
-        <div className="space-y-4">
-          <div className="card p-4">
-            <div className="flex flex-wrap items-end gap-4">
-              <label className="space-y-1 text-sm font-medium">
-                <span>From</span>
-                <input type="date" value={rangeStart} onChange={(e) => setRangeStart(e.target.value)} className="block rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]" />
-              </label>
-              <label className="space-y-1 text-sm font-medium">
-                <span>To</span>
-                <input type="date" value={rangeEnd} onChange={(e) => setRangeEnd(e.target.value)} className="block rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]" />
-              </label>
-              <button type="button" className="btn-secondary" onClick={resetRange}>This Month</button>
-            </div>
-          </div>
+      {adminTab === 'overview' && (
+        <AdminOverview
+          selectedEmployee={selectedEmployee}
+          activeProjects={activeProjects}
+          selectedProjectIds={selectedProjectIds}
+          setSelectedProjectIds={setSelectedProjectIds}
+          saveProjectAssignments={saveProjectAssignments}
+          summary={summary}
+          rangeStart={rangeStart}
+          rangeEnd={rangeEnd}
+          setRangeStart={setRangeStart}
+          setRangeEnd={setRangeEnd}
+          resetRange={resetRange}
+          exportEmployeePdf={exportEmployeePdf}
+          exportEmployeeXlsx={exportEmployeeXlsx}
+          rangeSummary={rangeSummary}
+          reimbursements={reimbursements}
+          setReimbursementAction={setReimbursementAction}
+          setReimbursementForm={setReimbursementForm}
+          reimbursementForm={reimbursementForm}
+          weeklySheets={weeklySheets}
+        />
+      )}
 
-          {teamLoading ? (
-            <div className="card p-4 text-sm text-slate-500">Loading team data...</div>
-          ) : (
-            <div className="card overflow-x-auto p-4">
-              <h2 className="mb-3 font-semibold">Team Daily Hours ({rangeStart} – {rangeEnd})</h2>
-              <table className="w-full text-xs">
-                <thead>
-                  <tr className="border-b border-[#dddddd] dark:border-[#444]">
-                    <th className="py-2 pr-3 text-left font-semibold">Employee</th>
-                    {(() => {
-                      const days = [];
-                      const cursor = new Date(`${rangeStart}T00:00:00`);
-                      const end = new Date(`${rangeEnd}T00:00:00`);
-                      while (cursor <= end) {
-                        days.push(`${cursor.getFullYear()}-${String(cursor.getMonth()+1).padStart(2,'0')}-${String(cursor.getDate()).padStart(2,'0')}`);
-                        cursor.setDate(cursor.getDate() + 1);
-                      }
-                      return days.map((d) => (
-                        <th key={d} className="px-1 py-2 text-center font-medium text-slate-400">{d.slice(5)}</th>
-                      ));
-                    })()}
-                  </tr>
-                </thead>
-                <tbody>
-                  {teamData.map((row) => {
-                    const days = [];
-                    const cursor = new Date(`${rangeStart}T00:00:00`);
-                    const end = new Date(`${rangeEnd}T00:00:00`);
-                    while (cursor <= end) {
-                      days.push(`${cursor.getFullYear()}-${String(cursor.getMonth()+1).padStart(2,'0')}-${String(cursor.getDate()).padStart(2,'0')}`);
-                      cursor.setDate(cursor.getDate() + 1);
-                    }
-                    return (
-                      <tr key={row.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
-                        <td className="py-2 pr-3 font-semibold whitespace-nowrap">{row.name}</td>
-                        {days.map((d) => {
-                          const h = row.dayMap[d] || 0;
-                          return (
-                            <td key={d} className="px-1 py-2 text-center">
-                              {h > 0 ? (
-                                <span className="inline-block rounded bg-teal/10 px-1.5 py-0.5 font-semibold text-teal dark:bg-teal/20">{h}h</span>
-                              ) : (
-                                <span className="text-slate-300 dark:text-slate-600">—</span>
-                              )}
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    );
-                  })}
-                  {!teamData.length ? (
-                    <tr><td colSpan={100} className="py-4 text-center text-slate-500">No data for this range.</td></tr>
-                  ) : null}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      ) : null}
-
-      {adminTab === 'projects' ? (
-        <div className="grid gap-4 lg:grid-cols-2">
-          <div className="card p-4">
-            <h2 className="text-lg font-semibold">Project Master</h2>
-            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Add, manage, and delete projects.</p>
-            <div className="mt-3 flex gap-2">
-              <input type="text" value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addProject()} placeholder="Enter project name" className="w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]" />
-              <button type="button" className="btn-primary" onClick={addProject}>Add</button>
-            </div>
-            <div className="mt-4 space-y-2">
-              {projects.map((project) => (
-                <div key={project.id} className="flex items-center justify-between rounded-lg border border-[#dddddd] px-3 py-2 text-sm dark:border-[#444]">
-                  <div>
-                    <p className="font-semibold">{project.name}</p>
-                    <p className="text-xs text-slate-500">{project.is_active ? 'Active' : 'Archived'}</p>
-                  </div>
-                  <div className="flex gap-2">
-                    <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => toggleProjectActive(project)}>{project.is_active ? 'Archive' : 'Activate'}</button>
-                    <button type="button" className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => deleteProject(project)}>Delete</button>
-                  </div>
-                </div>
-              ))}
-              {!projects.length ? <p className="text-sm text-slate-500">No projects yet.</p> : null}
-            </div>
-          </div>
-
-          <div className="card p-4">
-            <h2 className="text-lg font-semibold">Assign Projects to Employee</h2>
-            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Only assigned projects appear in expenses and timesheets.</p>
-            <div className="mt-3">
-              <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">Select Employee</label>
-              <select className="mt-1 w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]" value={selectedEmployeeId} onChange={(e) => setSelectedEmployeeId(e.target.value)}>
-                {employees.map((emp) => <option key={emp.id} value={emp.id}>{emp.name}</option>)}
-              </select>
-            </div>
-            <div className="mt-3 grid gap-2 sm:grid-cols-2">
-              {activeProjects.map((project) => (
-                <label key={project.id} className="flex cursor-pointer items-center gap-2 rounded-lg border border-[#dddddd] px-3 py-2 text-sm hover:border-teal/40 dark:border-[#444]">
-                  <input type="checkbox" checked={selectedProjectIds.includes(project.id)} onChange={(e) => { const checked = e.target.checked; setSelectedProjectIds((cur) => { const next = new Set(cur); if (checked) next.add(project.id); else next.delete(project.id); return [...next]; }); }} />
-                  <span>{project.name}</span>
-                </label>
-              ))}
-            </div>
-            <div className="mt-4 flex justify-end">
-              <button type="button" className="btn-primary" onClick={saveProjectAssignments}>Save Assignments</button>
-            </div>
-          </div>
-
-          <div className="card overflow-x-auto p-4 lg:col-span-2">
-            <h2 className="mb-3 font-semibold">Project Allocation</h2>
-            <table className="w-full min-w-[500px] text-sm">
-              <thead><tr className="border-b border-[#dddddd] text-left dark:border-[#444]"><th className="py-2">Project</th><th>Status</th><th>Assigned Employees</th></tr></thead>
-              <tbody>
-                {projectEmployeeMatrix.map((row) => (
-                  <tr key={row.project.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
-                    <td className="py-2 font-semibold">{row.project.name}</td>
-                    <td>{row.project.is_active ? <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300">Active</span> : <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-500 dark:bg-slate-700">Archived</span>}</td>
-                    <td>{row.employees.length ? row.employees.join(', ') : <span className="text-slate-400">No assignments</span>}</td>
-                  </tr>
-                ))}
-                {!projectEmployeeMatrix.length ? <tr><td colSpan={3} className="py-3 text-slate-500">No projects yet.</td></tr> : null}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="card p-4 lg:col-span-2">
-            <h2 className="text-lg font-semibold">Unrecognized Projects</h2>
-            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">These projects were entered by employees but don't exist in the official project list. Promote them to make them official.</p>
-            {unrecognizedProjects.length > 0 ? (
-              <div className="mt-4 space-y-2">
-                {unrecognizedProjects.map((projectName) => (
-                  <div key={projectName} className="flex items-center justify-between rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm dark:border-amber-900/40 dark:bg-amber-900/20">
-                    <div>
-                      <p className="font-semibold text-amber-900 dark:text-amber-100">{projectName}</p>
-                      <p className="text-xs text-amber-700 dark:text-amber-200">Used by employees but not official</p>
-                    </div>
-                    <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => promoteProjectToOfficial(projectName)}>Promote</button>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <p className="mt-4 text-sm text-slate-500 dark:text-slate-400">All projects are recognized. ✓</p>
-            )}
-          </div>
-        </div>
-      ) : null}
-
-{adminTab === 'timesheet' ? (
+      {adminTab === 'timesheet' && (
         <div className="space-y-4">
           <div className="card overflow-x-auto p-4 w-full">
             <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1204,21 +1015,40 @@ export default function AdminPage() {
                     {bulkApproving ? 'Approving...' : `Approve Selected (${bulkSelected.size})`}
                   </button>
                 ) : null}
-                <span className="rounded-full bg-teal/10 px-3 py-1 text-xs font-semibold text-teal dark:bg-teal/20">
-                  Week-table approval workflow
-                </span>
+                {[
+                  { key: 'all', label: 'All' },
+                  { key: 'draft', label: 'Draft' },
+                  { key: 'submitted', label: 'Submitted' },
+                  { key: 'under_review', label: 'Under Review' },
+                  { key: 'needs_changes', label: 'Needs Changes' },
+                  { key: 'approved', label: 'Approved' },
+                  { key: 'rejected', label: 'Rejected' }
+                ].map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => setTimesheetStatusFilter(item.key)}
+                    className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                      timesheetStatusFilter === item.key
+                        ? 'border-teal bg-teal text-white'
+                        : 'border-[#dddddd] bg-white text-slate-700 hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]'
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
               </div>
             </div>
 
             <div className="space-y-3 md:hidden">
-              {weeklySheets.map((sheet) => (
+              {filteredWeeklySheets.map((sheet) => (
                 <div key={sheet.id} className="rounded-xl border border-[#dddddd] p-3 text-sm dark:border-[#444]">
                   <div className="flex items-start justify-between gap-3">
                     <div>
                       <p className="font-semibold">{sheet.week_start} to {sheet.week_end}</p>
                       <p className="text-xs text-slate-500 dark:text-slate-400">{Number(sheet.total_hours || 0).toFixed(2)}h</p>
                     </div>
-                    <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{sheet.status}</span>
+                    <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-bold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{sheet.status}</span>
                   </div>
                   {sheet.approval_comment ? <p className="mt-2 text-xs text-slate-600 dark:text-slate-300">{sheet.approval_comment}</p> : null}
                   {normalizeConflictFlags(sheet.conflict_flags).length ? (
@@ -1244,7 +1074,7 @@ export default function AdminPage() {
                   </div>
                 </div>
               ))}
-              {!weeklySheets.length ? <p className="text-sm text-slate-500">No weekly timesheets for this employee.</p> : null}
+              {!filteredWeeklySheets.length ? <p className="text-sm text-slate-500">No weekly timesheets match the selected filter.</p> : null}
             </div>
 
             <table className="hidden w-full min-w-[1100px] text-sm md:table">
@@ -1252,9 +1082,9 @@ export default function AdminPage() {
                 <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
                   <th className="py-2 pr-2">
                     <input type="checkbox" onChange={(e) => {
-                      if (e.target.checked) setBulkSelected(new Set(weeklySheets.filter((s) => s.status !== 'approved').map((s) => s.id)));
+                      if (e.target.checked) setBulkSelected(new Set(filteredWeeklySheets.filter((s) => s.status !== 'approved').map((s) => s.id)));
                       else setBulkSelected(new Set());
-                    }} checked={bulkSelected.size > 0 && bulkSelected.size === weeklySheets.filter((s) => s.status !== 'approved').length} />
+                    }} checked={bulkSelected.size > 0 && bulkSelected.size === filteredWeeklySheets.filter((s) => s.status !== 'approved').length} />
                   </th>
                   <th className="py-2">Week</th>
                   <th>Status</th>
@@ -1267,7 +1097,7 @@ export default function AdminPage() {
                 </tr>
               </thead>
               <tbody>
-                {weeklySheets.map((sheet) => (
+                {filteredWeeklySheets.map((sheet) => (
                   <tr key={sheet.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
                     <td className="py-2 pr-2">
                       <input
@@ -1305,35 +1135,54 @@ export default function AdminPage() {
                     </td>
                   </tr>
                 ))}
-                {!weeklySheets.length ? (
+                {!filteredWeeklySheets.length ? (
                   <tr>
-                    <td className="py-3 text-slate-500" colSpan={9}>No weekly timesheets for this employee.</td>
+                    <td className="py-3 text-slate-500" colSpan={9}>No weekly timesheets match the selected filter.</td>
                   </tr>
                 ) : null}
               </tbody>
             </table>
           </div>
         </div>
-      ) : null}
+      )}
 
       {adminTab === 'leave' ? (
         <div className="card overflow-x-auto p-4 w-full">
           <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <h2 className="font-semibold">Leave Requests for {selectedEmployee?.name}</h2>
-            <span className="rounded-full bg-teal/10 px-3 py-1 text-xs font-semibold text-teal dark:bg-teal/20">
-              In-app leave workflow
-            </span>
+            <div className="flex flex-wrap gap-2">
+              {[
+                { key: 'all', label: 'All' },
+                { key: 'pending', label: 'Pending' },
+                { key: 'approved', label: 'Approved' },
+                { key: 'rejected', label: 'Rejected' },
+                { key: 'cancelled', label: 'Cancelled' }
+              ].map((item) => (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => setLeaveStatusFilter(item.key)}
+                  className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                    leaveStatusFilter === item.key
+                      ? 'border-teal bg-teal text-white'
+                      : 'border-[#dddddd] bg-white text-slate-700 hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]'
+                  }`}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
           </div>
 
           <div className="space-y-3 md:hidden">
-            {leaveRequests.map((request) => (
+            {filteredLeaveRequests.map((request) => (
               <div key={request.id} className="rounded-xl border border-[#dddddd] p-3 text-sm dark:border-[#444]">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="font-semibold">{request.leave_type}</p>
                     <p className="text-xs text-slate-500 dark:text-slate-400">{request.start_date} to {request.end_date}</p>
                   </div>
-                  <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{request.status}</span>
+                  <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-bold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{request.status}</span>
                 </div>
                 <p className="mt-2 font-semibold">{request.subject}</p>
                 {request.content ? <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{request.content}</p> : null}
@@ -1345,7 +1194,7 @@ export default function AdminPage() {
                 </div>
               </div>
             ))}
-            {!leaveRequests.length ? <p className="text-sm text-slate-500">No leave requests for this employee.</p> : null}
+            {!filteredLeaveRequests.length ? <p className="text-sm text-slate-500">No leave requests match the selected filter.</p> : null}
           </div>
 
           <table className="hidden w-full min-w-[1100px] text-sm md:table">
@@ -1362,7 +1211,7 @@ export default function AdminPage() {
               </tr>
             </thead>
             <tbody>
-              {leaveRequests.map((request) => (
+              {filteredLeaveRequests.map((request) => (
                 <tr key={request.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
                   <td className="py-2">{request.leave_type}</td>
                   <td>{request.start_date} to {request.end_date}</td>
@@ -1381,9 +1230,9 @@ export default function AdminPage() {
                   </td>
                 </tr>
               ))}
-              {!leaveRequests.length ? (
+              {!filteredLeaveRequests.length ? (
                 <tr>
-                  <td className="py-3 text-slate-500" colSpan={8}>No leave requests for this employee.</td>
+                  <td className="py-3 text-slate-500" colSpan={8}>No leave requests match the selected filter.</td>
                 </tr>
               ) : null}
             </tbody>
@@ -1483,7 +1332,7 @@ export default function AdminPage() {
                       <p className="font-semibold">{entry.date} {entry.expense_time?.slice(0, 5) || '—'}</p>
                       <p className="text-xs text-slate-500 dark:text-slate-400">{entry.project || '-'} · {formatExpenseCategoryList(entry)}</p>
                     </div>
-                    <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{entry.status}</span>
+                    <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-bold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{entry.status}</span>
                   </div>
                   <p className="mt-2 font-semibold">₹{Number(entry.amount).toFixed(2)}</p>
                   {entry.approval_comment ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{entry.approval_comment}</p> : null}
@@ -1531,444 +1380,84 @@ export default function AdminPage() {
                       {normalizeConflictFlags(entry.conflict_flags).length ? (
                         <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700 dark:bg-red-900/30 dark:text-red-300">
                           {normalizeConflictFlags(entry.conflict_flags).join(', ')}
-
-      <div className="card p-4">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h2 className="text-xl font-semibold text-ink dark:text-white">{selectedEmployee?.name}</h2>
-            <p className="text-sm text-slate-500 dark:text-slate-400">Employee overview and history</p>
-          </div>
-          <div className="rounded-full bg-teal/10 px-3 py-1 text-xs font-semibold text-teal dark:bg-teal/20">
-            Sorted alphabetically by name
-          </div>
-        </div>
-      </div>
-
-      <div className="card p-4">
-        <h2 className="text-lg font-semibold">Assign Projects</h2>
-        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Manage which projects this employee can see and use in expenses and timesheets.</p>
-
-        <div className="mt-3 grid gap-2 sm:grid-cols-2">
-          {activeProjects.map((project) => (
-            <label key={project.id} className="flex items-center gap-2 rounded-lg border border-[#dddddd] px-3 py-2 text-sm dark:border-[#444]">
-              <input
-                type="checkbox"
-                checked={selectedProjectIds.includes(project.id)}
-                onChange={(event) => {
-                  const checked = event.target.checked;
-                  setSelectedProjectIds((current) => {
-                    const next = new Set(current);
-                    if (checked) next.add(project.id);
-                    else next.delete(project.id);
-                    return [...next];
-                  });
-                }}
-              />
-              <span>{project.name}</span>
-            </label>
-          ))}
-        </div>
-
-        <div className="mt-4 flex justify-end">
-          <button type="button" className="btn-primary" onClick={saveProjectAssignments}>Save Assignments</button>
-        </div>
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <div className="card p-4">
-          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Weekly Hours</p>
-          <p className="mt-2 text-2xl font-bold">{summary.weeklyHours}h</p>
-        </div>
-        <div className="card p-4">
-          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Weekly Approved Expenses</p>
-          <p className="mt-2 text-2xl font-bold">₹{summary.weeklyExpenseTotal}</p>
-        </div>
-        <div className="card p-4">
-          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Monthly Hours</p>
-          <p className="mt-2 text-2xl font-bold">{summary.monthlyHours}h</p>
-        </div>
-        <div className="card p-4">
-          <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Monthly Approved Expenses</p>
-          <p className="mt-2 text-2xl font-bold">₹{summary.monthlyExpenseTotal}</p>
-        </div>
-      </div>
-
-      <div className="card p-4">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <label className="space-y-2 text-sm font-medium">
-              <span>From Date</span>
-              <input
-                type="date"
-                value={rangeStart}
-                onChange={(event) => setRangeStart(event.target.value)}
-                className="w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]"
-              />
-            </label>
-            <label className="space-y-2 text-sm font-medium">
-              <span>To Date</span>
-              <input
-                type="date"
-                value={rangeEnd}
-                onChange={(event) => setRangeEnd(event.target.value)}
-                className="w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]"
-              />
-            </label>
-          </div>
-
-          <button type="button" className="btn-secondary self-start lg:self-auto" onClick={resetRange}>
-            Reset to This Month
-          </button>
-        </div>
-
-        <div className="mt-4 flex flex-wrap gap-3">
-          <button type="button" className="btn-primary" onClick={exportEmployeePdf}>
-            Download Employee PDF
-          </button>
-          <button type="button" className="btn-secondary" onClick={exportEmployeeXlsx}>
-            Download Employee Excel
-          </button>
-        </div>
-
-        <div className="mt-4 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-          <div className="rounded-xl border border-[#dddddd] p-3 dark:border-[#444]">
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Range Hours</p>
-            <p className="mt-2 text-xl font-bold">{rangeSummary.totalHours}h</p>
-          </div>
-          <div className="rounded-xl border border-[#dddddd] p-3 dark:border-[#444]">
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Range Approved Expenses</p>
-            <p className="mt-2 text-xl font-bold">₹{rangeSummary.totalExpenses}</p>
-          </div>
-          <div className="rounded-xl border border-[#dddddd] p-3 dark:border-[#444]">
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Daily Entries</p>
-            <p className="mt-2 text-xl font-bold">{rangeSummary.dailyRows.length}</p>
-          </div>
-          <div className="rounded-xl border border-[#dddddd] p-3 dark:border-[#444]">
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Categories</p>
-            <p className="mt-2 text-xl font-bold">{rangeSummary.categoryRows.length}</p>
-          </div>
-        </div>
-
-        <div className="mt-4 grid gap-6 lg:grid-cols-2">
-          <div className="overflow-x-auto rounded-xl border border-[#dddddd] dark:border-[#444]">
-            <table className="w-full min-w-[520px] text-sm">
-              <thead>
-                <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
-                  <th className="py-2 px-3">Date</th>
-                  <th>Working Hours</th>
-                  <th>Approved Expenses</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rangeSummary.dailyRows.map((row) => (
-                  <tr key={row.date} className="border-b border-[#f1f1f1] dark:border-[#444]">
-                    <td className="py-2 px-3">{row.date}</td>
-                    <td>{row.workingHours}h</td>
-                    <td>₹{row.expenses}</td>
-                  </tr>
-                ))}
-                {!rangeSummary.dailyRows.length ? (
-                  <tr>
-                    <td className="py-3 px-3 text-slate-500" colSpan={3}>No records for the selected date range.</td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
-
-          <div className="overflow-x-auto rounded-xl border border-[#dddddd] dark:border-[#444]">
-            <table className="w-full min-w-[420px] text-sm">
-              <thead>
-                <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
-                  <th className="py-2 px-3">Category</th>
-                  <th>Total Amount</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rangeSummary.categoryRows.map((row) => (
-                  <tr key={row.category} className="border-b border-[#f1f1f1] dark:border-[#444]">
-                    <td className="py-2 px-3">{row.category}</td>
-                    <td>₹{row.amount}</td>
-                  </tr>
-                ))}
-                {!rangeSummary.categoryRows.length ? (
-                  <tr>
-                    <td className="py-3 px-3 text-slate-500" colSpan={2}>No expense categories in the selected date range.</td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-
-      <div className="card overflow-x-auto p-4 w-full">
-        <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <h2 className="font-semibold">Expenses for {selectedEmployee?.name}</h2>
-          <div className="flex flex-wrap gap-2">
-            {[
-              { key: 'all', label: `All (${expenseStatusCounts.all})` },
-              { key: 'pending', label: `Pending (${expenseStatusCounts.pending})` },
-              { key: 'approved', label: `Approved (${expenseStatusCounts.approved})` },
-              { key: 'rejected', label: `Rejected (${expenseStatusCounts.rejected})` }
-            ].map((item) => (
-              <button
-                key={item.key}
-                type="button"
-                onClick={() => setExpenseStatusFilter(item.key)}
-                className={`rounded-full border px-3 py-1 text-xs font-semibold transition ${
-                  expenseStatusFilter === item.key
-                    ? 'border-teal bg-teal text-white'
-                    : 'border-[#dddddd] bg-white text-slate-700 hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]'
-                }`}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-        </div>
-
-        <div className="mb-4 grid gap-3 md:grid-cols-3">
-          <div className="rounded-xl border border-[#dddddd] p-3 dark:border-[#444]">
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Pending Approvals</p>
-            <p className="mt-1 text-xl font-bold">{slaStats.totalPending}</p>
-          </div>
-          <div className="rounded-xl border border-[#dddddd] p-3 dark:border-[#444]">
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Pending {'>'} 24h</p>
-            <p className="mt-1 text-xl font-bold text-amber-600 dark:text-amber-300">{slaStats.over24h}</p>
-          </div>
-          <div className="rounded-xl border border-[#dddddd] p-3 dark:border-[#444]">
-            <p className="text-xs font-semibold uppercase tracking-wider text-slate-400">Pending {'>'} 3 days</p>
-            <p className="mt-1 text-xl font-bold text-red-600 dark:text-red-300">{slaStats.over3d}</p>
-          </div>
-        </div>
-
-        <div className="mb-4 overflow-x-auto rounded-xl border border-[#dddddd] dark:border-[#444]">
-          <table className="w-full min-w-[980px] text-sm">
-            <thead>
-              <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
-                <th className="py-2 px-3">Request</th>
-                <th>Type</th>
-                <th>Pending Since</th>
-                <th>Elapsed</th>
-                <th>Last Reminder</th>
-                <th>Escalated</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pendingApprovals.slice(0, 8).map((item) => (
-                <tr key={`${item.kind}-${item.id}`} className="border-b border-[#f1f1f1] dark:border-[#444]">
-                  <td className="py-2 px-3">{item.label}</td>
-                  <td className="capitalize">{item.kind}</td>
-                  <td>{item.sinceAt ? new Date(item.sinceAt).toLocaleString() : '-'}</td>
-                  <td className={item.pendingHours > 72 ? 'font-semibold text-red-600 dark:text-red-300' : item.pendingHours > 24 ? 'font-semibold text-amber-600 dark:text-amber-300' : ''}>
-                    {formatSlaDuration(item.pendingHours)}
-                  </td>
-                  <td>{item.lastReminderAt ? new Date(item.lastReminderAt).toLocaleString() : '-'}</td>
-                  <td>{item.escalatedAt ? new Date(item.escalatedAt).toLocaleString() : '-'}</td>
-                  <td>
-                    <div className="flex flex-wrap gap-2">
-                      <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => updateSlaMarker(item.kind, item.id, 'last_reminder_at')}>Remind</button>
-                      <button type="button" className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => updateSlaMarker(item.kind, item.id, 'escalated_at')}>Escalate</button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-              {!pendingApprovals.length ? (
-                <tr>
-                  <td className="py-3 px-3 text-slate-500" colSpan={7}>No pending approvals for SLA tracking.</td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="space-y-3 md:hidden">
-          {filteredExpenses.map((entry) => (
-            <div key={entry.id} className="rounded-xl border border-[#dddddd] p-3 text-sm dark:border-[#444]">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="font-semibold">{entry.date} {entry.expense_time?.slice(0, 5) || '—'}</p>
-                  <p className="text-xs text-slate-500 dark:text-slate-400">{entry.project || '-'} · {formatExpenseCategoryList(entry)}</p>
-                </div>
-                <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-semibold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{entry.status}</span>
-              </div>
-              <p className="mt-2 font-semibold">₹{Number(entry.amount).toFixed(2)}</p>
-              {entry.approval_comment ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{entry.approval_comment}</p> : null}
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => openStatusAction(entry, 'approved')} disabled={entry.status === 'approved'}>Approve</button>
-                <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => openStatusAction(entry, 'rejected')} disabled={entry.status === 'rejected'}>Reject</button>
-                <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => openStatusAction(entry, 'pending')} disabled={entry.status === 'pending'}>Pending</button>
-                <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => setHistoryPreview(entry)}>History</button>
-                <button type="button" className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => deleteExpenseAsAdmin(entry)}>Delete</button>
-              </div>
-            </div>
-          ))}
-          {!filteredExpenses.length ? <p className="text-sm text-slate-500">No expenses for this employee.</p> : null}
-        </div>
-
-        <table className="hidden w-full min-w-[1120px] text-sm md:table">
-          <thead>
-            <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
-              <th className="py-2">Date</th>
-              <th>Time</th>
-              <th>Project</th>
-              <th>Category</th>
-              <th>Amount</th>
-              <th>Status</th>
-              <th>Notes</th>
-              <th>Conflicts</th>
-              <th>Receipt</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filteredExpenses.map((entry) => (
-              <tr key={entry.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
-                <td className="py-2">{entry.date}</td>
-                <td>{entry.expense_time?.slice(0, 5) || '—'}</td>
-                <td>{entry.project || '-'}</td>
-                <td>{formatExpenseCategoryList(entry)}</td>
-                <td>₹{Number(entry.amount).toFixed(2)}</td>
-                <td className="capitalize">
-                  {entry.status}
-                  {entry.approval_comment ? <p className="mt-1 max-w-[180px] truncate text-[11px] text-slate-500 dark:text-slate-400">{entry.approval_comment}</p> : null}
-                </td>
-                <td>{entry.notes || '—'}</td>
-                <td>
-                  {normalizeConflictFlags(entry.conflict_flags).length ? (
-                    <span className="rounded-full bg-red-100 px-2 py-0.5 text-[11px] font-semibold text-red-700 dark:bg-red-900/30 dark:text-red-300">
-                      {normalizeConflictFlags(entry.conflict_flags).join(', ')}
-                    </span>
-                  ) : '—'}
-                </td>
-                <td>
-                  {entry.receipt_url ? (
-                    <button
-                      type="button"
-                      onClick={() => setReceiptPreview({
-                        url: entry.receipt_url,
-                        title: `${selectedEmployee?.name || 'Employee'} - ${formatExpenseCategoryList(entry)} - ${entry.date}`
-                      })}
-                      className="inline-flex items-center gap-1 rounded-lg bg-teal/10 px-2.5 py-1 text-xs font-semibold text-teal hover:bg-teal/20 transition dark:bg-teal/20 dark:text-teal-300"
-                    >
-                      <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
-                      </svg>
-                      View
-                    </button>
-                  ) : (
-                    <span className="text-slate-400">—</span>
-                  )}
-                </td>
-                <td>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className="btn-primary px-3 py-1 text-xs"
-                      onClick={() => openStatusAction(entry, 'approved')}
-                      disabled={entry.status === 'approved'}
-                    >
-                      Approve
-                    </button>
-                    <button
-                      type="button"
-                      className="btn-secondary px-3 py-1 text-xs"
-                      onClick={() => openStatusAction(entry, 'rejected')}
-                      disabled={entry.status === 'rejected'}
-                    >
-                      Reject
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]"
-                      onClick={() => openStatusAction(entry, 'pending')}
-                      disabled={entry.status === 'pending'}
-                    >
-                      Pending
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]"
-                      onClick={() => setHistoryPreview(entry)}
-                    >
-                      History
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300"
-                      onClick={() => deleteExpenseAsAdmin(entry)}
-                    >
-                      Delete
-                    </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
-            {!filteredExpenses.length ? (
-              <tr>
-                <td className="py-3 text-slate-500" colSpan={10}>No expenses for this employee.</td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-
-        <div className="mt-4 space-y-4">
-          <div className="rounded-xl border border-[#dddddd] p-4 dark:border-[#444]">
-            <h3 className="mb-2 font-semibold">Reimbursement Ledger for {selectedEmployee?.name}</h3>
-            <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">Approved vs Paid tracking</p>
-            
-            <div className="space-y-3 md:hidden">
-              {reimbursements.map((entry) => (
-                <div key={entry.id} className="rounded-lg border border-[#dddddd] p-2 text-xs dark:border-[#444]">
-                  <div className="flex items-start justify-between gap-2">
-                    <div>
-                      <p className="font-semibold">{entry.expense_id}</p>
-                      <p className="text-slate-500">₹{Number(entry.approved_amount || 0).toFixed(2)}</p>
-                    </div>
-                    <span className="whitespace-nowrap rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold capitalize text-slate-700 dark:bg-slate-700 dark:text-slate-200">{entry.payment_status || 'pending'}</span>
-                  </div>
-                  <button type="button" className="btn-primary mt-2 w-full px-3 py-1 text-xs" onClick={() => { setReimbursementAction(entry); setReimbursementForm({ payment_mode: entry.payment_mode || 'bank_transfer', transaction_reference: entry.transaction_reference || '' }); }} disabled={entry.payment_status === 'paid'}>Mark Paid</button>
-                </div>
-              ))}
-              {!reimbursements.length ? <p className="text-xs text-slate-500">No reimbursement ledger items yet.</p> : null}
-            </div>
-
-            <table className="hidden w-full min-w-[600px] text-xs md:table">
-              <thead>
-                <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
-                  <th className="py-1.5 px-2">Expense ID</th>
-                  <th>Amount</th>
-                  <th>Status</th>
-                  <th>Paid Date</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {reimbursements.map((entry) => (
-                  <tr key={entry.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
-                    <td className="py-1.5 px-2">{entry.expense_id}</td>
-                    <td>₹{Number(entry.approved_amount || 0).toFixed(2)}</td>
-                    <td className="capitalize text-[10px]">{entry.payment_status || '-'}</td>
-                    <td>{entry.paid_date || '—'}</td>
+                        </span>
+                      ) : '—'}
+                    </td>
                     <td>
-                      <button type="button" className="btn-primary px-2 py-0.5 text-[10px]" onClick={() => { setReimbursementAction(entry); setReimbursementForm({ payment_mode: entry.payment_mode || 'bank_transfer', transaction_reference: entry.transaction_reference || '' }); }} disabled={entry.payment_status === 'paid'}>Mark Paid</button>
+                      {entry.receipt_url ? (
+                        <button
+                          type="button"
+                          onClick={() => setReceiptPreview({
+                            url: entry.receipt_url,
+                            title: `${selectedEmployee?.name || 'Employee'} - ${formatExpenseCategoryList(entry)} - ${entry.date}`
+                          })}
+                          className="inline-flex items-center gap-1 rounded-lg bg-teal/10 px-2.5 py-1 text-xs font-semibold text-teal hover:bg-teal/20 transition dark:bg-teal/20 dark:text-teal-300"
+                        >
+                          <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                          </svg>
+                          View
+                        </button>
+                      ) : (
+                        <span className="text-slate-400">—</span>
+                      )}
+                    </td>
+                    <td>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          className="btn-primary px-3 py-1 text-xs"
+                          onClick={() => openStatusAction(entry, 'approved')}
+                          disabled={entry.status === 'approved'}
+                        >
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          className="btn-secondary px-3 py-1 text-xs"
+                          onClick={() => openStatusAction(entry, 'rejected')}
+                          disabled={entry.status === 'rejected'}
+                        >
+                          Reject
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]"
+                          onClick={() => openStatusAction(entry, 'pending')}
+                          disabled={entry.status === 'pending'}
+                        >
+                          Pending
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]"
+                          onClick={() => setHistoryPreview(entry)}
+                        >
+                          History
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300"
+                          onClick={() => deleteExpenseAsAdmin(entry)}
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
-                {!reimbursements.length ? (
+                {!filteredExpenses.length ? (
                   <tr>
-                    <td className="py-1.5 px-2 text-slate-500" colSpan={5}>No reimbursement ledger items yet.</td>
+                    <td className="py-3 text-slate-500" colSpan={10}>No expenses for this employee.</td>
                   </tr>
                 ) : null}
               </tbody>
             </table>
           </div>
         </div>
-      </div>
-    ) : null}
+      ) : null}
+
 
       <Modal
         title={statusAction ? `Update Expense to ${statusAction.status}` : 'Update Expense Status'}
@@ -2193,8 +1682,6 @@ export default function AdminPage() {
           </div>
         ) : null}
       </Modal>
-    </>
-    )}
     </div>
   );
 }

@@ -9,6 +9,7 @@ import LeavePage from './pages/LeavePage';
 import LoginPage from './pages/LoginPage';
 import OnboardingPage from './pages/OnboardingPage';
 import ReportsPage from './pages/ReportsPage';
+import ProjectMasterPage from './pages/ProjectMasterPage';
 import TimesheetPage from './pages/TimesheetPage';
 
 function AppShell({ children }) {
@@ -116,6 +117,17 @@ export default function App() {
           <ProtectedRoute adminOnly>
             <AppShell>
               <AdminPage />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/projects"
+        element={
+          <ProtectedRoute adminOnly>
+            <AppShell>
+              <ProjectMasterPage />
             </AppShell>
           </ProtectedRoute>
         }
