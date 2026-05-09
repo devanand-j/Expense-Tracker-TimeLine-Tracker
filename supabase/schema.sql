@@ -1533,11 +1533,13 @@ create table if not exists public.material_masters (
   acquisition_date date,
   status text not null default 'available' check (status in ('available', 'in_use', 'damaged', 'retired')),
   notes text,
+  deleted_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
 
 alter table public.material_masters add column if not exists quantity integer not null default 1;
+alter table public.material_masters add column if not exists deleted_at timestamptz;
 update public.material_masters set quantity = 1 where quantity is null or quantity < 1;
 
 -- Material tracking logs (one record per material movement event)
@@ -1594,7 +1596,7 @@ drop policy if exists "Material Masters: employees can view" on public.material_
 create policy "Material Masters: employees can view"
 on public.material_masters
 for select
-using (true);
+using (deleted_at is null);
 
 drop policy if exists "Material Masters: admin create/update/delete" on public.material_masters;
 create policy "Material Masters: admin create/update/delete"

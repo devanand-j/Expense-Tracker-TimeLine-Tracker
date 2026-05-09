@@ -25,6 +25,7 @@ export async function fetchMaterialMasters() {
   const { data, error } = await supabase
     .from('material_masters')
     .select('*')
+    .is('deleted_at', null)
     .order('created_at', { ascending: false });
   if (error) throw error;
   return data || [];
@@ -36,6 +37,7 @@ export async function fetchMaterialsByCategory(category) {
     .select('*')
     .eq('category', category)
     .eq('status', 'available')
+    .is('deleted_at', null)
     .order('name');
   if (error) throw error;
   return data || [];
@@ -63,7 +65,7 @@ export async function updateMaterialMaster(id, updates) {
 export async function deleteMaterialMaster(id) {
   const { error } = await supabase
     .from('material_masters')
-    .delete()
+    .update({ deleted_at: new Date().toISOString() })
     .eq('id', id);
 
   if (error) throw error;
