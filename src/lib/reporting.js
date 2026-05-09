@@ -1,4 +1,4 @@
-import { calculateDurationHours } from './time';
+import { calculateDurationHours, toDateKey as sharedToDateKey, formatDate } from './time';
 import { categoryShareRows } from './expenseCategories';
 
 const MINUTES_PER_DAY = 24 * 60;
@@ -9,7 +9,7 @@ const ONSITE_TYPES = new Set(['onsite', 'team_lunch', 'client_visit']);
 
 function toDateKey(value) {
   if (!value) return '';
-  return String(value).slice(0, 10);
+  return sharedToDateKey(value);
 }
 
 function isWithinRange(dateValue, startDate, endDate) {
@@ -99,7 +99,15 @@ function toTimeRangeLabel(startTime, endTime) {
 
 function toDayName(dateValue) {
   if (!dateValue) return '';
-  return new Date(`${dateValue}T00:00:00`).toLocaleDateString('en-US', { weekday: 'long' });
+  return formatDate(new Date(`${dateValue}T00:00:00`));
+}
+
+function formatShiftLabel(value) {
+  return value === 'night' ? 'Night Shift' : 'Day Shift';
+}
+
+function formatSupportLabel(value) {
+  return value === 'remote' ? 'Remote Support' : 'Onsite Support';
 }
 
 function collectDailyTimelineRows(entries = [], startDate = '', endDate = '') {
@@ -110,6 +118,7 @@ function collectDailyTimelineRows(entries = [], startDate = '', endDate = '') {
     const dateKey = toDateKey(entry.date);
     const hours = Number(entry.duration || calculateDurationHours(entry.start_time, entry.end_time));
     const shiftSplit = splitDayNightHours(entry.start_time, entry.end_time);
+    const supportMode = entry.support_mode || (isOnsiteType(entry.type) ? 'onsite' : 'remote');
     const current = dailyMap.get(dateKey) || {
       date: dateKey,
       day: toDayName(dateKey),
@@ -118,6 +127,8 @@ function collectDailyTimelineRows(entries = [], startDate = '', endDate = '') {
       remoteSupportHours: 0,
       dayShiftHours: 0,
       nightShiftHours: 0,
+      shiftModes: new Set(),
+      supportModes: new Set(),
       projects: new Set(),
       onSiteTimings: [],
       remoteTimings: []
@@ -126,6 +137,8 @@ function collectDailyTimelineRows(entries = [], startDate = '', endDate = '') {
     current.workingHours += hours;
     current.dayShiftHours += shiftSplit.dayHours;
     current.nightShiftHours += shiftSplit.nightHours;
+    current.shiftModes.add(entry.shift || 'day');
+    current.supportModes.add(supportMode);
     if (entry.project) current.projects.add(entry.project);
 
     const timingLabel = toTimeRangeLabel(entry.start_time, entry.end_time);
@@ -152,6 +165,8 @@ function collectDailyTimelineRows(entries = [], startDate = '', endDate = '') {
         remoteSupportHours: Number(row.remoteSupportHours.toFixed(2)),
         dayShiftHours: Number(row.dayShiftHours.toFixed(2)),
         nightShiftHours: Number(row.nightShiftHours.toFixed(2)),
+        shiftModes: row.shiftModes.size ? Array.from(row.shiftModes).map(formatShiftLabel).join(' | ') : '-',
+        supportModes: row.supportModes.size ? Array.from(row.supportModes).map(formatSupportLabel).join(' | ') : '-',
         projectLabel: row.projects.size === 0
           ? '-'
           : (row.projects.size === 1 ? Array.from(row.projects)[0] : 'Multiple Projects'),
@@ -176,11 +191,7 @@ function eachDateInclusive(startDate, endDate) {
 }
 
 function toInputDate(dateValue) {
-  const dt = dateValue instanceof Date ? dateValue : new Date(dateValue);
-  const year = dt.getFullYear();
-  const month = String(dt.getMonth() + 1).padStart(2, '0');
-  const day = String(dt.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return sharedToDateKey(dateValue instanceof Date ? dateValue : new Date(dateValue));
 }
 
 export function buildRangeSummary(timeline = [], expenses = [], startDate = '', endDate = '') {
@@ -264,6 +275,8 @@ export function buildRangeSummary(timeline = [], expenses = [], startDate = '', 
       remoteSupportHours: row.remoteSupportHours,
       dayShiftHours: row.dayShiftHours,
       nightShiftHours: row.nightShiftHours,
+      shiftModes: row.shiftModes,
+      supportModes: row.supportModes,
       onSiteTimings: row.onSiteTimings,
       remoteTimings: row.remoteTimings,
       expenses: row.expenses,
@@ -280,6 +293,8 @@ export function buildRangeSummary(timeline = [], expenses = [], startDate = '', 
       remoteSupportHours: '',
       dayShiftHours: '',
       nightShiftHours: '',
+      shiftModes: '',
+      supportModes: '',
       onSiteTimings: '',
       remoteTimings: '',
       expenses: '',
@@ -335,6 +350,8 @@ export function buildAllStaffTimesheet(entries = [], profiles = [], startDate = 
           remoteSupportHours: 0,
           dayShiftHours: 0,
           nightShiftHours: 0,
+          shiftModes: '-',
+          supportModes: '-',
           projectLabel: '-',
           onSiteTimings: '-',
           remoteTimings: '-'

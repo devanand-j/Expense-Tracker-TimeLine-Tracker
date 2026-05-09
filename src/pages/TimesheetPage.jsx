@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useCallback, useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
+import PageLoader from '../components/PageLoader';
 import { supabase } from '../lib/supabaseClient';
-import { startOfWeek } from '../lib/time';
+import { startOfWeek, toDateKey, formatDate } from '../lib/time';
 
 const DAY_COLUMNS = [
   { key: 'monday', label: 'Mon' },
@@ -14,6 +15,16 @@ const DAY_COLUMNS = [
   { key: 'sunday', label: 'Sun' }
 ];
 
+const SHIFT_OPTIONS = [
+  { value: 'day', label: 'Day Shift' },
+  { value: 'night', label: 'Night Shift' }
+];
+
+const SUPPORT_OPTIONS = [
+  { value: 'onsite', label: 'Onsite Support' },
+  { value: 'remote', label: 'Remote Support' }
+];
+
 const TIMESHEET_STATUS_STYLES = {
   draft: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
   submitted: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
@@ -23,20 +34,15 @@ const TIMESHEET_STATUS_STYLES = {
   rejected: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-300'
 };
 
-function formatDateKey(date) {
-  const value = date instanceof Date ? date : new Date(date);
-  const year = value.getFullYear();
-  const month = String(value.getMonth() + 1).padStart(2, '0');
-  const day = String(value.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
+// Use shared toDateKey from lib/time
+const formatDateKey = toDateKey;
 
 function formatWeekLabel(weekStart) {
   const start = new Date(weekStart);
   const end = new Date(start);
   end.setDate(end.getDate() + 6);
   const opts = { month: 'short', day: 'numeric', year: 'numeric' };
-  return `${start.toLocaleDateString('en-IN', opts)} – ${end.toLocaleDateString('en-IN', opts)}`;
+  return `${formatDate(start)} – ${formatDate(end)}`;
 }
 
 function getWeekDays(weekStart) {
@@ -54,6 +60,8 @@ function createEmptyRow() {
     project: '',
     activity: '',
     description: '',
+    shift: 'day',
+    support_mode: 'onsite',
     monday: '',
     tuesday: '',
     wednesday: '',
@@ -92,6 +100,19 @@ function isDayApproved(approvedDays, dateKey) {
   return approvedDays.has(dateKey);
 }
 
+function isSheetFullyApproved(approvedDays) {
+  return approvedDays.size >= DAY_COLUMNS.length;
+}
+
+function normalizeRow(row) {
+  return {
+    ...createEmptyRow(),
+    ...row,
+    shift: row?.shift || 'day',
+    support_mode: row?.support_mode || 'onsite'
+  };
+}
+
 export default function TimesheetPage() {
   const { user, profile } = useAuth();
   const [selectedDate, setSelectedDate] = useState(() => formatDateKey(new Date()));
@@ -109,6 +130,8 @@ export default function TimesheetPage() {
   const [loading, setLoading] = useState(true);
   const [isDirty, setIsDirty] = useState(false);
   const [filters, setFilters] = useState({ status: '' });
+  const [weekHistory, setWeekHistory] = useState([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const showTimesheet = !filters.status || sheetStatus === filters.status;
 
   const weekStart = useMemo(() => startOfWeek(new Date(selectedDate)), [selectedDate]);
@@ -117,10 +140,10 @@ export default function TimesheetPage() {
   const weekEndKey = useMemo(() => formatDateKey(weekDays[6]), [weekDays]);
   const isFutureWeek = useMemo(() => weekStartKey > formatDateKey(new Date()), [weekStartKey]);
   const isAdmin = profile?.role === 'admin';
-  // Sheet-level editable: employee needs draft/needs_changes; admin always editable (non-future)
+  const hasPartialApproval = approvedDays.size > 0 && !isSheetFullyApproved(approvedDays);
   const sheetEditable = isAdmin
     ? !isFutureWeek
-    : ['draft', 'needs_changes'].includes(sheetStatus) && !isFutureWeek;
+    : !isFutureWeek && ['draft', 'needs_changes', 'rejected', 'approved'].includes(sheetStatus);
 
   const totalHours = useMemo(() => rows.reduce((sum, row) => sum + sumRowHours(row), 0), [rows]);
   const filledDays = useMemo(() => {
@@ -172,7 +195,7 @@ export default function TimesheetPage() {
 
       if (data) {
         setSheetId(data.id);
-        setRows(Array.isArray(data.rows) && data.rows.length ? data.rows : [createEmptyRow()]);
+        setRows(Array.isArray(data.rows) && data.rows.length ? data.rows.map(normalizeRow) : [createEmptyRow()]);
         setSheetStatus(data.status || 'draft');
         setApprovalComment(data.approval_comment || '');
         setReviewedAt(data.reviewed_at || '');
@@ -256,28 +279,44 @@ export default function TimesheetPage() {
     return () => window.removeEventListener('beforeunload', handler);
   }, [isDirty]);
 
-  // #10: Real-time notifications for timesheet status changes
+
+  // Load week history (last 12 weeks) for the history panel
   useEffect(() => {
-    if (!user?.id || isAdmin) return;
-    const channel = supabase
-      .channel(`timesheet-notify-${user.id}`)
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'weekly_timesheets', filter: `user_id=eq.${user.id}` }, (payload) => {
-        const newStatus = payload.new?.status;
-        const oldStatus = payload.old?.status;
-        if (newStatus && newStatus !== oldStatus) {
-          const week = payload.new?.week_start || '';
-          if (newStatus === 'approved') toast.success(`Timesheet for week of ${week} was approved!`);
-          else if (newStatus === 'rejected') toast.error(`Timesheet for week of ${week} was rejected.`);
-          else if (newStatus === 'needs_changes') toast(`Timesheet for week of ${week} needs changes.`, { icon: '✏️' });
-        }
-      });
-    channel.subscribe();
-    return () => { void supabase.removeChannel(channel); };
-  }, [user?.id, isAdmin]);
+    if (!user?.id) return;
+    supabase
+      .from('weekly_timesheets')
+      .select('id, week_start, week_end, status, total_hours, approval_comment')
+      .eq('user_id', user.id)
+      .order('week_start', { ascending: false })
+      .limit(12)
+      .then(({ data }) => setWeekHistory(data || []));
+  }, [user?.id, sheetStatus]);
+
+  const withdrawSheet = useCallback(async () => {
+    if (!sheetId || sheetStatus !== 'submitted') return;
+    const ok = window.confirm('Withdraw this timesheet from review? You can re-submit after making changes.');
+    if (!ok) return;
+    setSaving(true);
+    const historyEntry = { status: 'draft', comment: 'Withdrawn by employee', changed_at: new Date().toISOString(), changed_by: user.id };
+    const { error } = await supabase
+      .from('weekly_timesheets')
+      .update({ status: 'draft', status_history: [...statusHistory, historyEntry] })
+      .eq('id', sheetId);
+    setSaving(false);
+    if (error) { toast.error(error.message); return; }
+    setSheetStatus('draft');
+    setStatusHistory((h) => [...h, historyEntry]);
+    toast.success('Timesheet withdrawn');
+  }, [sheetId, sheetStatus, statusHistory, user?.id]);
 
   const updateRow = (rowId, key, value) => {
     const nextValue = isDayColumnKey(key) ? normalizeHours(value) : value;
     setRows((current) => current.map((row) => (row.id === rowId ? { ...row, [key]: nextValue } : row)));
+    setIsDirty(true);
+  };
+
+  const selectRowOption = (rowId, key, value) => {
+    setRows((current) => current.map((row) => (row.id === rowId ? { ...row, [key]: value } : row)));
     setIsDirty(true);
   };
 
@@ -302,12 +341,16 @@ export default function TimesheetPage() {
   const saveSheet = async (nextStatus = 'draft') => {
     if (!user?.id) return;
 
+    const resolvedStatus = !isAdmin && sheetStatus === 'approved' && nextStatus === 'draft'
+      ? 'needs_changes'
+      : nextStatus;
+
     if (isFutureWeek) {
       toast.error('Future weeks cannot be filled yet.');
       return;
     }
 
-    if (nextStatus === 'submitted' && totalHours <= 0) {
+    if (resolvedStatus === 'submitted' && totalHours <= 0) {
       toast.error('Add at least one hour before submitting.');
       return;
     }
@@ -336,7 +379,7 @@ export default function TimesheetPage() {
     }
 
     // #2: Gap day warning — warn if there are zero-hour days between filled days
-    if (nextStatus === 'submitted') {
+    if (resolvedStatus === 'submitted') {
       const filledIndices = DAY_COLUMNS.map((col, idx) => {
         const total = rows.reduce((s, r) => s + Number(r[col.key] || 0), 0);
         return total > 0 ? idx : -1;
@@ -369,8 +412,8 @@ export default function TimesheetPage() {
     }));
 
     const historyEntry = {
-      status: nextStatus,
-      comment: nextStatus === 'submitted' ? 'Submitted for approval' : '',
+      status: resolvedStatus,
+      comment: resolvedStatus === 'submitted' ? 'Submitted for approval' : '',
       changed_at: new Date().toISOString(),
       changed_by: user.id
     };
@@ -383,8 +426,8 @@ export default function TimesheetPage() {
       week_end: weekEndKey,
       rows: cleanedRows,
       total_hours: Number(cleanedRows.reduce((sum, row) => sum + sumRowHours(row), 0).toFixed(2)),
-      status: nextStatus,
-      submitted_at: nextStatus === 'submitted' ? new Date().toISOString() : submittedAt || null
+      status: resolvedStatus,
+      submitted_at: resolvedStatus === 'submitted' ? new Date().toISOString() : submittedAt || null
     };
 
     if (isAdmin) {
@@ -407,16 +450,14 @@ export default function TimesheetPage() {
       return;
     }
 
-    setSheetStatus(nextStatus);
-    setSubmittedAt(nextStatus === 'submitted' ? new Date().toISOString() : submittedAt);
+    setSheetStatus(resolvedStatus);
+    setSubmittedAt(resolvedStatus === 'submitted' ? new Date().toISOString() : submittedAt);
     setStatusHistory(nextHistory);
     setIsDirty(false);
-    toast.success(nextStatus === 'submitted' ? 'Timesheet sent for approval' : 'Timesheet saved');
+    toast.success(resolvedStatus === 'submitted' ? 'Timesheet sent for approval' : 'Timesheet saved');
   };
 
-  if (loading) {
-    return <div className="card p-6 text-sm text-slate-500">Loading timesheet...</div>;
-  }
+  if (loading) return <PageLoader message="Loading timesheet…" />;
 
   return (
     <div className="space-y-7">
@@ -655,6 +696,34 @@ export default function TimesheetPage() {
                     );
                   })}
                 </div>
+
+                  <label className="space-y-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    <span>Shift</span>
+                    <select
+                      value={row.shift || 'day'}
+                      onChange={(event) => selectRowOption(row.id, 'shift', event.target.value)}
+                      disabled={!editableByEmployee}
+                      className="field rounded-lg border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
+                    >
+                      {SHIFT_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="space-y-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    <span>Support Mode</span>
+                    <select
+                      value={row.support_mode || 'onsite'}
+                      onChange={(event) => selectRowOption(row.id, 'support_mode', event.target.value)}
+                      disabled={!editableByEmployee}
+                      className="field rounded-lg border-slate-300 dark:border-slate-600 dark:bg-slate-700 dark:text-white"
+                    >
+                      {SUPPORT_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </select>
+                  </label>
               </article>
             );
           })}
@@ -690,8 +759,16 @@ export default function TimesheetPage() {
           <button type="button" className="btn-secondary" onClick={() => saveSheet('draft')} disabled={saving || !editableByEmployee}>
             Save Draft
           </button>
+          {!isAdmin && sheetStatus === 'submitted' ? (
+            <button type="button" className="btn-secondary" onClick={withdrawSheet} disabled={saving}>
+              Withdraw
+            </button>
+          ) : null}
           <button type="button" className="btn-primary" onClick={() => saveSheet('submitted')} disabled={saving || !editableByEmployee}>
             Get Approval
+          </button>
+          <button type="button" className="btn-secondary" aria-label="View week history" onClick={() => setHistoryOpen((x) => !x)}>
+            History
           </button>
         </div>
         </div>
@@ -720,6 +797,29 @@ export default function TimesheetPage() {
         </div>
         <div className="h-20" />
       </div>
+
+      {historyOpen && (
+        <div className="card p-5">
+          <h2 className="mb-3 text-base font-semibold">Recent Weeks</h2>
+          <div className="space-y-2">
+            {weekHistory.length === 0 && <p className="text-sm text-slate-400">No timesheet history yet.</p>}
+            {weekHistory.map((sheet) => (
+              <button
+                key={sheet.id}
+                type="button"
+                onClick={() => { setSelectedDate(sheet.week_start); setHistoryOpen(false); }}
+                className="flex w-full items-center justify-between rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm transition hover:border-teal/40 hover:bg-teal/5 dark:border-slate-700 dark:bg-slate-800"
+              >
+                <span className="font-medium text-slate-700 dark:text-slate-200">{formatWeekLabel(sheet.week_start)}</span>
+                <div className="flex items-center gap-3">
+                  <span className="text-xs text-slate-400">{Number(sheet.total_hours || 0).toFixed(2)}h</span>
+                  <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${TIMESHEET_STATUS_STYLES[sheet.status] || ''}`}>{String(sheet.status).replace(/_/g, ' ')}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {profile?.role === 'admin' ? (
         <div className="card p-5">

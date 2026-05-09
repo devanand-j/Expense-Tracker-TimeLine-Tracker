@@ -1,7 +1,8 @@
 import React, { useMemo, useState } from 'react';
+import { formatDate } from '../lib/time';
 
 function getMonthName(year, month) {
-  return new Date(year, month, 1).toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+  return formatDate(new Date(year, month, 1));
 }
 
 function toInputDate(dateValue) {
@@ -10,6 +11,21 @@ function toInputDate(dateValue) {
   const month = String(dt.getMonth() + 1).padStart(2, '0');
   const day = String(dt.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+function startOfWeek(dateValue) {
+  const date = dateValue instanceof Date ? new Date(dateValue) : new Date(dateValue);
+  const day = date.getDay();
+  const diff = date.getDate() - day + (day === 0 ? -6 : 1);
+  date.setDate(diff);
+  date.setHours(0, 0, 0, 0);
+  return date;
+}
+
+function addDays(dateValue, days) {
+  const date = new Date(dateValue);
+  date.setDate(date.getDate() + days);
+  return date;
 }
 
 export default function AdminOverview({
@@ -35,6 +51,7 @@ export default function AdminOverview({
 }) {
   const [selectedMonthIndex, setSelectedMonthIndex] = useState(new Date().getMonth());
   const [selectedYearForTimeline, setSelectedYearForTimeline] = useState(new Date().getFullYear());
+  const [selectedWeekStart, setSelectedWeekStart] = useState(() => startOfWeek(new Date()));
 
   // Calculate 12-month data summary
   const monthlyData = useMemo(() => {
@@ -93,6 +110,40 @@ export default function AdminOverview({
     return monthlyData.find((m) => m.month === selectedMonthIndex && m.year === selectedYearForTimeline) || monthlyData[monthlyData.length - 1];
   }, [monthlyData, selectedMonthIndex, selectedYearForTimeline]);
 
+  const selectedWeekStartKey = useMemo(() => toInputDate(selectedWeekStart), [selectedWeekStart]);
+
+  const weeklyWorkRows = useMemo(() => {
+    const dayKeys = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+    if (!selectedEmployee?.id) return [];
+
+    const sheet = weeklySheets.find(
+      (entry) => entry.user_id === selectedEmployee.id && entry.week_start === selectedWeekStartKey
+    );
+
+    if (!sheet || !Array.isArray(sheet.rows)) return [];
+
+    return dayKeys.map((dayKey, index) => {
+      const date = addDays(selectedWeekStart, index);
+      const dateKey = toInputDate(date);
+      const totalHours = sheet.rows.reduce((sum, row) => sum + Number(row?.[dayKey] || 0), 0);
+      const isLocked = Array.isArray(sheet.approved_days) && sheet.approved_days.includes(dateKey);
+
+      return {
+        date,
+        dateKey,
+        totalHours: Number(totalHours.toFixed(2)),
+        submissionStatus: sheet.status,
+        approvalStatus: sheet.status === 'approved' ? 'approved' : sheet.status === 'rejected' ? 'rejected' : sheet.status === 'needs_changes' ? 'needs_changes' : sheet.status === 'submitted' || sheet.status === 'under_review' ? 'pending' : 'draft',
+        lockStatus: isLocked ? 'Locked' : (sheet.status === 'approved' ? 'Locked' : 'Editable')
+      };
+    });
+  }, [selectedEmployee?.id, selectedWeekStart, selectedWeekStartKey, weeklySheets]);
+
+  const weeklyWorkTotal = useMemo(
+    () => weeklyWorkRows.reduce((sum, row) => sum + row.totalHours, 0),
+    [weeklyWorkRows]
+  );
+
   const handleSelectMonth = (monthData) => {
     setRangeStart(monthData.startDate);
     setRangeEnd(monthData.endDate);
@@ -101,6 +152,82 @@ export default function AdminOverview({
   };
   return (
     <div className="space-y-6">
+      <div className="card p-5">
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-ink dark:text-white">Weekly Work Hours</h2>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+              Daily totals for the selected employee and week.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" className="rounded-lg border border-[#dddddd] bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200" onClick={() => setSelectedWeekStart((current) => addDays(startOfWeek(current), -7))}>
+              Previous Week
+            </button>
+            <button type="button" className="rounded-lg border border-[#dddddd] bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200" onClick={() => setSelectedWeekStart(startOfWeek(new Date()))}>
+              Current Week
+            </button>
+            <button type="button" className="rounded-lg border border-[#dddddd] bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200" onClick={() => setSelectedWeekStart((current) => addDays(startOfWeek(current), 7))}>
+              Next Week
+            </button>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-teal/20 bg-teal/5 p-4 dark:border-teal/30 dark:bg-teal/10">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Selected Week</p>
+              <p className="mt-1 text-lg font-bold text-ink dark:text-white">{formatDate(selectedWeekStart)} – {formatDate(addDays(selectedWeekStart, 6))}</p>
+              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">Employee: {selectedEmployee?.name || 'Select an employee'}</p>
+            </div>
+            <div className="text-right">
+              <p className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Weekly Total</p>
+              <p className="mt-1 text-3xl font-bold text-teal">{weeklyWorkTotal.toFixed(2)}h</p>
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4 overflow-x-auto">
+          <table className="w-full min-w-[760px] text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 text-left dark:border-slate-700">
+                <th className="py-2">Date</th>
+                <th>Total Hours</th>
+                <th>Submission Status</th>
+                <th>Approval Status</th>
+                <th>Lock Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {!selectedEmployee?.id ? (
+                <tr>
+                  <td className="py-3 text-slate-500" colSpan={5}>Select an employee to view weekly working hours.</td>
+                </tr>
+              ) : weeklyWorkRows.length === 0 ? (
+                <tr>
+                  <td className="py-3 text-slate-500" colSpan={5}>No weekly timesheet data found for this employee and week.</td>
+                </tr>
+              ) : weeklyWorkRows.map((row) => {
+                const hourTone = row.totalHours >= 8 ? 'text-emerald-600 dark:text-emerald-300' : row.totalHours > 0 ? 'text-amber-600 dark:text-amber-300' : 'text-slate-500 dark:text-slate-400';
+                return (
+                  <tr key={row.dateKey} className="border-b border-slate-100 dark:border-slate-800">
+                    <td className="py-2 font-medium text-ink dark:text-slate-100">{formatDate(row.date)}</td>
+                    <td className={`font-semibold ${hourTone}`}>{row.totalHours.toFixed(2)}h</td>
+                    <td className="capitalize text-slate-600 dark:text-slate-300">{row.submissionStatus}</td>
+                    <td className="capitalize text-slate-600 dark:text-slate-300">{row.approvalStatus}</td>
+                    <td>
+                      <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${row.lockStatus === 'Locked' ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300' : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'}`}>
+                        {row.lockStatus}
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div className="card p-4">
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div>

@@ -1,3 +1,16 @@
+// Consolidated date-key utility — use this everywhere instead of local copies
+export function toDateKey(value) {
+  const dt = value instanceof Date ? value : new Date(value);
+  const year = dt.getFullYear();
+  const month = String(dt.getMonth() + 1).padStart(2, '0');
+  const day = String(dt.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+export function todayKey() {
+  return toDateKey(new Date());
+}
+
 export function calculateDurationHours(startTime, endTime) {
   if (!startTime || !endTime) return 0;
 
@@ -32,5 +45,10 @@ export function startOfWeek(date = new Date()) {
 }
 
 export function formatDate(dateValue) {
-  return new Date(dateValue).toLocaleDateString();
+  const dt = dateValue instanceof Date ? dateValue : new Date(dateValue);
+  if (isNaN(dt)) return '';
+  const day = String(dt.getDate()).padStart(2, '0');
+  const month = String(dt.getMonth() + 1).padStart(2, '0');
+  const year = dt.getFullYear();
+  return `${day}-${month}-${year}`;
 }

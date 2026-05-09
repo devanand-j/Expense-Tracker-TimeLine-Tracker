@@ -4,7 +4,9 @@ import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContaine
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import Modal from '../components/Modal';
+import PageLoader from '../components/PageLoader';
 import AdminOverview from './AdminOverview';
+import AuditLogsViewer from '../components/AuditLogsViewer';
 import { categoryShareRows, formatExpenseCategoryList } from '../lib/expenseCategories';
 import { buildRangeSummary } from '../lib/reporting';
 import {
@@ -18,7 +20,7 @@ import {
 } from '../lib/adminHelpers';
 import { exportReportAsPdfAndUpload, exportReportAsXlsxAndUpload } from '../lib/export';
 import { supabase } from '../lib/supabaseClient';
-import { calculateDurationHours } from '../lib/time';
+import { calculateDurationHours, toDateKey } from '../lib/time';
 
 const PIE_COLORS = ['#04AA6D', '#0ea5e9', '#f59e0b', '#ef4444', '#8b5cf6', '#14b8a6'];
 const CUSTOM_PROJECTS_KEY = 'vseek_custom_projects';
@@ -51,11 +53,37 @@ function monthName(dateStr) {
 }
 
 function toInputDate(dateValue) {
-  const dt = dateValue instanceof Date ? dateValue : new Date(dateValue);
-  const year = dt.getFullYear();
-  const month = String(dt.getMonth() + 1).padStart(2, '0');
-  const day = String(dt.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return toDateKey(dateValue instanceof Date ? dateValue : new Date(dateValue));
+}
+
+function leaveDays(startDate, endDate) {
+  if (!startDate || !endDate) return 0;
+  const a = new Date(`${startDate}T00:00:00`);
+  const b = new Date(`${endDate}T00:00:00`);
+  return Math.max(0, Math.round((b - a) / 86400000) + 1);
+}
+
+function collectApprovedDaysFromSheet(sheet) {
+  const approvedDays = new Set();
+  const dayKeys = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+
+  if (!sheet?.week_start || !Array.isArray(sheet.rows)) return [];
+
+  dayKeys.forEach((dayKey, index) => {
+    const date = new Date(`${sheet.week_start}T00:00:00`);
+    date.setDate(date.getDate() + index);
+    const dateKey = toInputDate(date);
+    const hasHours = sheet.rows.some((row) => Number(row?.[dayKey] || 0) > 0);
+    if (hasHours) approvedDays.add(dateKey);
+  });
+
+  return Array.from(approvedDays);
+}
+
+function getDepartmentFromOnboarding(onboardingRow) {
+  const hrManaged = onboardingRow?.hr_managed_data || {};
+  const editable = onboardingRow?.employee_editable_data || {};
+  return String(hrManaged.department || editable.department || '').trim();
 }
 
 export default function AdminPage() {
@@ -67,6 +95,7 @@ export default function AdminPage() {
   const [newProjectName, setNewProjectName] = useState('');
   const [selectedProjectIds, setSelectedProjectIds] = useState([]);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('');
+  const [departmentFilter, setDepartmentFilter] = useState('all');
   const [timeline, setTimeline] = useState([]);
   const [expenses, setExpenses] = useState([]);
   const [leaveRequests, setLeaveRequests] = useState([]);
@@ -75,21 +104,19 @@ export default function AdminPage() {
   const [expenseStatusFilter, setExpenseStatusFilter] = useState('all');
   const [timesheetStatusFilter, setTimesheetStatusFilter] = useState('all');
   const [leaveStatusFilter, setLeaveStatusFilter] = useState('all');
-  const [statusAction, setStatusAction] = useState(null);
-  const [statusComment, setStatusComment] = useState('');
-  const [timesheetAction, setTimesheetAction] = useState(null);
-  const [timesheetComment, setTimesheetComment] = useState('');
-  const [leaveAction, setLeaveAction] = useState(null);
-  const [leaveComment, setLeaveComment] = useState('');
   const [historyPreview, setHistoryPreview] = useState(null);
   const [receiptPreview, setReceiptPreview] = useState(null);
   const [reimbursementAction, setReimbursementAction] = useState(null);
   const [reimbursementForm, setReimbursementForm] = useState({ payment_mode: 'bank_transfer', transaction_reference: '' });
+  const [expenseAction, setExpenseAction] = useState(null);
+  const [expenseActionForm, setExpenseActionForm] = useState({ action: 'approve', comment: '' });
+  const [timesheetAction, setTimesheetAction] = useState(null);
+  const [timesheetActionForm, setTimesheetActionForm] = useState({ action: 'approve', comment: '' });
+  const [leaveAction, setLeaveAction] = useState(null);
+  const [leaveActionForm, setLeaveActionForm] = useState({ action: 'approve', comment: '' });
   const [unrecognizedProjects, setUnrecognizedProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [adminTab, setAdminTab] = useState('timesheet');
-  const [bulkSelected, setBulkSelected] = useState(new Set());
-  const [bulkApproving, setBulkApproving] = useState(false);
   const [rangeStart, setRangeStart] = useState(() => {
     const today = new Date();
     return toInputDate(new Date(today.getFullYear(), today.getMonth(), 1));
@@ -100,25 +127,43 @@ export default function AdminPage() {
     const tab = searchParams.get('tab');
     if (!tab) return;
 
-    const allowedTabs = new Set(['overview', 'timesheet', 'leave', 'expenses']);
+    const allowedTabs = new Set(['overview', 'timesheet', 'leave', 'expenses', 'audit_logs']);
     if (allowedTabs.has(tab)) {
       setAdminTab(tab);
     }
   }, [searchParams]);
 
   async function loadEmployees() {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('id, name, role, created_at')
-      .eq('role', 'employee')
-      .order('name', { ascending: true });
+    const [profilesRes, onboardingRes] = await Promise.all([
+      supabase
+        .from('profiles')
+        .select('id, name, role, created_at')
+        .eq('role', 'employee')
+        .order('name', { ascending: true }),
+      supabase
+        .from('employee_onboarding')
+        .select('user_id, hr_managed_data, employee_editable_data')
+    ]);
 
-    if (error) {
-      toast.error(error.message);
+    if (profilesRes.error) {
+      toast.error(profilesRes.error.message);
       return [];
     }
 
-    return data || [];
+    if (onboardingRes.error && !isMissingSchemaTable(onboardingRes.error, 'public.employee_onboarding')) {
+      toast.error(onboardingRes.error.message);
+      return [];
+    }
+
+    const onboardingByUserId = new Map((onboardingRes.data || []).map((row) => [row.user_id, row]));
+
+    return (profilesRes.data || []).map((employee) => {
+      const onboarding = onboardingByUserId.get(employee.id);
+      return {
+        ...employee,
+        department: getDepartmentFromOnboarding(onboarding)
+      };
+    });
   }
 
   async function loadEmployeeData(employeeId) {
@@ -391,6 +436,29 @@ export default function AdminPage() {
     [employees, selectedEmployeeId]
   );
 
+  const departmentOptions = useMemo(
+    () => [...new Set(employees.map((employee) => employee.department).filter(Boolean))].sort((a, b) => a.localeCompare(b)),
+    [employees]
+  );
+
+  const visibleEmployees = useMemo(
+    () => departmentFilter === 'all'
+      ? employees
+      : employees.filter((employee) => employee.department === departmentFilter),
+    [employees, departmentFilter]
+  );
+
+  useEffect(() => {
+    if (!visibleEmployees.length) {
+      setSelectedEmployeeId('');
+      return;
+    }
+
+    if (!visibleEmployees.some((employee) => employee.id === selectedEmployeeId)) {
+      setSelectedEmployeeId(visibleEmployees[0].id);
+    }
+  }, [visibleEmployees, selectedEmployeeId]);
+
   const employeeNameById = useMemo(() => {
     const map = new Map();
     employees.forEach((employee) => {
@@ -576,36 +644,6 @@ export default function AdminPage() {
     setRangeEnd(toInputDate(new Date()));
   };
 
-  // #5: Bulk approve timesheets
-  const bulkApproveTimesheets = async () => {
-    if (!bulkSelected.size) return;
-    setBulkApproving(true);
-    const ids = [...bulkSelected];
-    const now = new Date().toISOString();
-    const results = await Promise.all(
-      ids.map((id) => {
-        const sheet = weeklySheets.find((s) => s.id === id);
-        const nextHistory = [
-          ...(Array.isArray(sheet?.status_history) ? sheet.status_history : []),
-          { status: 'approved', comment: 'Bulk approved', changed_at: now, changed_by: user?.id || null }
-        ];
-        return supabase.from('weekly_timesheets').update({
-          status: 'approved',
-          approval_comment: 'Bulk approved',
-          status_history: nextHistory,
-          reviewed_by: user?.id || null,
-          reviewed_at: now
-        }).eq('id', id);
-      })
-    );
-    setBulkApproving(false);
-    const errors = results.filter((r) => r.error);
-    if (errors.length) toast.error(`${errors.length} approval(s) failed`);
-    else toast.success(`${ids.length} timesheet(s) approved`);
-    setBulkSelected(new Set());
-    loadEmployeeData(selectedEmployeeId);
-  };
-
   const exportEmployeePdf = async () => {
     try {
       if (!selectedEmployeeId || !selectedEmployee || !user?.id) {
@@ -723,133 +761,6 @@ export default function AdminPage() {
     }
   };
 
-  const openStatusAction = (entry, status) => {
-    setStatusAction({ entry, status });
-    setStatusComment('');
-  };
-
-  const openTimesheetAction = (sheet, status) => {
-    setTimesheetAction({ sheet, status });
-    setTimesheetComment('');
-  };
-
-  const openLeaveAction = (request, status) => {
-    setLeaveAction({ request, status });
-    setLeaveComment('');
-  };
-
-  const updateStatus = async () => {
-    if (!statusAction) return;
-    const { entry, status } = statusAction;
-
-    const nextHistory = [
-      ...(Array.isArray(entry.status_history) ? entry.status_history : []),
-      {
-        status,
-        comment: String(statusComment || '').trim(),
-        changed_at: new Date().toISOString(),
-        changed_by: user?.id || null
-      }
-    ];
-
-    // #14: Optimistic update
-    setExpenses((prev) => prev.map((e) => e.id === entry.id ? { ...e, status, approval_comment: String(statusComment || '').trim() || null } : e));
-    setStatusAction(null);
-    setStatusComment('');
-
-    const { error } = await supabase
-      .from('expenses')
-      .update({
-        status,
-        approval_comment: String(statusComment || '').trim() || null,
-        status_history: nextHistory
-      })
-      .eq('id', entry.id);
-
-    if (error) {
-      toast.error(error.message);
-      loadEmployeeData(selectedEmployeeId); // revert on error
-      return;
-    }
-
-    toast.success(`Expense ${status}`);
-  };
-
-  const updateTimesheetStatus = async () => {
-    if (!timesheetAction) return;
-    const { sheet, status } = timesheetAction;
-
-    const nextHistory = [
-      ...(Array.isArray(sheet.status_history) ? sheet.status_history : []),
-      {
-        status,
-        comment: String(timesheetComment || '').trim(),
-        changed_at: new Date().toISOString(),
-        changed_by: user?.id || null
-      }
-    ];
-
-    // #14: Optimistic update
-    setWeeklySheets((prev) => prev.map((s) => s.id === sheet.id ? { ...s, status, approval_comment: String(timesheetComment || '').trim() || null } : s));
-    setTimesheetAction(null);
-    setTimesheetComment('');
-
-    const { error } = await supabase
-      .from('weekly_timesheets')
-      .update({
-        status,
-        approval_comment: String(timesheetComment || '').trim() || null,
-        status_history: nextHistory,
-        reviewed_by: user?.id || null,
-        reviewed_at: new Date().toISOString()
-      })
-      .eq('id', sheet.id);
-
-    if (error) {
-      toast.error(error.message);
-      loadEmployeeData(selectedEmployeeId); // revert on error
-      return;
-    }
-
-    toast.success(`Weekly timesheet ${status}`);
-  };
-
-  const updateLeaveStatus = async () => {
-    if (!leaveAction) return;
-    const { request, status } = leaveAction;
-
-    const nextHistory = [
-      ...(Array.isArray(request.status_history) ? request.status_history : []),
-      {
-        status,
-        comment: String(leaveComment || '').trim(),
-        changed_at: new Date().toISOString(),
-        changed_by: user?.id || null
-      }
-    ];
-
-    const { error } = await supabase
-      .from('leave_requests')
-      .update({
-        status,
-        approval_comment: String(leaveComment || '').trim() || null,
-        status_history: nextHistory,
-        reviewed_by: user?.id || null,
-        reviewed_at: new Date().toISOString()
-      })
-      .eq('id', request.id);
-
-    if (error) {
-      toast.error(error.message);
-      return;
-    }
-
-    setLeaveAction(null);
-    setLeaveComment('');
-    toast.success(`Leave request ${status}`);
-    loadEmployeeData(selectedEmployeeId);
-  };
-
   const updateSlaMarker = async (kind, id, field) => {
     const tableMap = {
       expense: 'expenses',
@@ -911,6 +822,42 @@ export default function AdminPage() {
     loadEmployeeData(selectedEmployeeId);
   };
 
+  const updateExpenseStatus = async () => {
+    if (!expenseAction) return;
+
+    const { action, comment } = expenseActionForm;
+    const newStatus = action === 'reject' ? 'rejected' : 'approved';
+    const statusHistory = Array.isArray(expenseAction.status_history)
+      ? [...expenseAction.status_history]
+      : [];
+
+    statusHistory.push({
+      status: newStatus,
+      changed_at: new Date().toISOString(),
+      changed_by: user?.id,
+      comment: comment || null
+    });
+
+    const { error } = await supabase
+      .from('expenses')
+      .update({
+        status: newStatus,
+        approval_comment: comment || null,
+        status_history: statusHistory
+      })
+      .eq('id', expenseAction.id);
+
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+
+    toast.success(`Expense ${newStatus}`);
+    setExpenseAction(null);
+    setExpenseActionForm({ action: 'approve', comment: '' });
+    loadEmployeeData(selectedEmployeeId);
+  };
+
   const deleteTimesheetAsAdmin = async (sheet) => {
     const ok = window.confirm('Warning: This weekly timesheet will be permanently deleted and cannot be retrieved again. Do you want to continue?');
     if (!ok) return;
@@ -929,9 +876,70 @@ export default function AdminPage() {
     loadEmployeeData(selectedEmployeeId);
   };
 
-  if (loading) {
-    return <div className="card p-4 text-sm">Loading employee data...</div>;
-  }
+  const updateTimesheetStatus = async () => {
+    if (!timesheetAction) return;
+    
+    const { action, comment } = timesheetActionForm;
+    const statusMap = {
+      approve: 'approved',
+      reject: 'rejected',
+      needs_changes: 'needs_changes',
+      under_review: 'under_review',
+      revoke: 'rejected'
+    };
+    const newStatus = statusMap[action] || action;
+
+    const statusHistory = timesheetAction.status_history ? JSON.parse(JSON.stringify(timesheetAction.status_history)) : [];
+    statusHistory.push({
+      status: newStatus,
+      changed_at: new Date().toISOString(),
+      changed_by: user?.id,
+      comment: comment || null
+    });
+
+    const { error } = await supabase
+      .from('weekly_timesheets')
+      .update({
+        status: newStatus,
+        approval_comment: comment || null,
+        status_history: statusHistory,
+        approved_days: newStatus === 'approved' ? collectApprovedDaysFromSheet(timesheetAction) : [],
+        reviewed_by: user?.id,
+        reviewed_at: new Date().toISOString()
+      })
+      .eq('id', timesheetAction.id);
+
+    if (error) {
+      toast.error(error.message);
+      return;
+    }
+
+    toast.success(`Timesheet ${newStatus}`);
+    setTimesheetAction(null);
+    setTimesheetActionForm({ action: 'approve', comment: '' });
+    loadEmployeeData(selectedEmployeeId);
+  };
+
+  const updateLeaveStatus = async () => {
+    if (!leaveAction) return;
+    const { action, comment } = leaveActionForm;
+    const newStatus = action === 'approve' ? 'approved' : 'rejected';
+    const nextHistory = [
+      ...(Array.isArray(leaveAction.status_history) ? leaveAction.status_history : []),
+      { status: newStatus, comment: comment || null, changed_at: new Date().toISOString(), changed_by: user?.id }
+    ];
+    const { error } = await supabase
+      .from('leave_requests')
+      .update({ status: newStatus, approval_comment: comment || null, status_history: nextHistory })
+      .eq('id', leaveAction.id);
+    if (error) { toast.error(error.message); return; }
+    toast.success(`Leave request ${newStatus}`);
+    setLeaveAction(null);
+    setLeaveActionForm({ action: 'approve', comment: '' });
+    loadEmployeeData(selectedEmployeeId);
+  };
+
+  if (loading) return <PageLoader message="Loading employee data…" />;
 
   if (!employees.length) {
     return <div className="card p-4 text-sm">No employees found.</div>;
@@ -947,8 +955,19 @@ export default function AdminPage() {
           </p>
         </div>
 
-        <div className="flex flex-wrap gap-2">
-          {employees.map((employee) => (
+        <div className="flex flex-wrap items-center gap-3">
+          <select
+            value={departmentFilter}
+            onChange={(event) => setDepartmentFilter(event.target.value)}
+            className="rounded-full border border-[#dddddd] bg-white px-3 py-1.5 text-sm font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]"
+          >
+            <option value="all">All Departments</option>
+            {departmentOptions.map((department) => (
+              <option key={department} value={department}>{department}</option>
+            ))}
+          </select>
+
+          {visibleEmployees.map((employee) => (
             <button
               key={employee.id}
               type="button"
@@ -959,7 +978,7 @@ export default function AdminPage() {
                   : 'border-[#dddddd] bg-white text-slate-700 hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]'
               }`}
             >
-              {employee.name}
+              {employee.name}{employee.department ? ` · ${employee.department}` : ''}
             </button>
           ))}
         </div>
@@ -970,7 +989,8 @@ export default function AdminPage() {
           { key: 'overview', label: 'Overview' },
           { key: 'timesheet', label: 'Timesheet' },
           { key: 'leave', label: 'Leave' },
-          { key: 'expenses', label: 'Expenses' }
+          { key: 'expenses', label: 'Expenses' },
+          { key: 'audit_logs', label: 'Audit Logs' }
         ].map(({ key, label }) => (
           <button
             key={key}
@@ -1017,16 +1037,6 @@ export default function AdminPage() {
             <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <h2 className="font-semibold">Weekly Timesheets for {selectedEmployee?.name}</h2>
               <div className="flex flex-wrap items-center gap-2">
-                {bulkSelected.size > 0 ? (
-                  <button
-                    type="button"
-                    className="btn-primary px-3 py-1 text-xs"
-                    onClick={bulkApproveTimesheets}
-                    disabled={bulkApproving}
-                  >
-                    {bulkApproving ? 'Approving...' : `Approve Selected (${bulkSelected.size})`}
-                  </button>
-                ) : null}
                 {[
                   { key: 'all', label: 'All' },
                   { key: 'draft', label: 'Draft' },
@@ -1067,22 +1077,11 @@ export default function AdminPage() {
                     <p className="mt-1 text-xs font-semibold text-red-600 dark:text-red-300">Conflicts: {normalizeConflictFlags(sheet.conflict_flags).join(', ')}</p>
                   ) : null}
                   <div className="mt-3 flex flex-wrap gap-2">
-                    <label className="flex items-center gap-2 text-xs">
-                      <input
-                        type="checkbox"
-                        disabled={sheet.status === 'approved'}
-                        checked={bulkSelected.has(sheet.id)}
-                        onChange={(e) => setBulkSelected((prev) => {
-                          const next = new Set(prev);
-                          if (e.target.checked) next.add(sheet.id); else next.delete(sheet.id);
-                          return next;
-                        })}
-                      />
-                      <span>Select</span>
-                    </label>
-                    <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => openTimesheetAction(sheet, 'approved')} disabled={sheet.status === 'approved'}>Approve</button>
-                    <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => openTimesheetAction(sheet, 'needs_changes')} disabled={sheet.status === 'needs_changes'}>Need Changes</button>
                     <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => setHistoryPreview(sheet)}>History</button>
+                    <button type="button" className="rounded-md border border-emerald-100 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-600 transition hover:bg-emerald-100 dark:border-emerald-900/40 dark:bg-emerald-900/20 dark:text-emerald-300" onClick={() => { setTimesheetAction(sheet); setTimesheetActionForm({ action: 'approve', comment: '' }); }}>Approve</button>
+                    <button type="button" className="rounded-md border border-orange-100 bg-orange-50 px-3 py-1 text-xs font-semibold text-orange-600 transition hover:bg-orange-100 dark:border-orange-900/40 dark:bg-orange-900/20 dark:text-orange-300" onClick={() => { setTimesheetAction(sheet); setTimesheetActionForm({ action: 'needs_changes', comment: '' }); }}>Changes</button>
+                    <button type="button" className="rounded-md border border-amber-100 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-600 transition hover:bg-amber-100 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300" onClick={() => { setTimesheetAction(sheet); setTimesheetActionForm({ action: 'revoke', comment: '' }); }}>Revoke</button>
+                    <button type="button" className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => { setTimesheetAction(sheet); setTimesheetActionForm({ action: 'reject', comment: '' }); }}>Reject</button>
                   </div>
                 </div>
               ))}
@@ -1092,12 +1091,6 @@ export default function AdminPage() {
             <table className="hidden w-full min-w-[1100px] text-sm md:table">
               <thead>
                 <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
-                  <th className="py-2 pr-2">
-                    <input type="checkbox" onChange={(e) => {
-                      if (e.target.checked) setBulkSelected(new Set(filteredWeeklySheets.filter((s) => s.status !== 'approved').map((s) => s.id)));
-                      else setBulkSelected(new Set());
-                    }} checked={bulkSelected.size > 0 && bulkSelected.size === filteredWeeklySheets.filter((s) => s.status !== 'approved').length} />
-                  </th>
                   <th className="py-2">Week</th>
                   <th>Status</th>
                   <th>Total Hours</th>
@@ -1111,18 +1104,6 @@ export default function AdminPage() {
               <tbody>
                 {filteredWeeklySheets.map((sheet) => (
                   <tr key={sheet.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
-                    <td className="py-2 pr-2">
-                      <input
-                        type="checkbox"
-                        disabled={sheet.status === 'approved'}
-                        checked={bulkSelected.has(sheet.id)}
-                        onChange={(e) => setBulkSelected((prev) => {
-                          const next = new Set(prev);
-                          if (e.target.checked) next.add(sheet.id); else next.delete(sheet.id);
-                          return next;
-                        })}
-                      />
-                    </td>
                     <td className="py-2">{sheet.week_start} to {sheet.week_end}</td>
                     <td className="capitalize">{sheet.status}</td>
                     <td>{Number(sheet.total_hours || 0).toFixed(2)}h</td>
@@ -1138,10 +1119,11 @@ export default function AdminPage() {
                     </td>
                     <td>
                       <div className="flex flex-wrap gap-2">
-                        <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => openTimesheetAction(sheet, 'approved')} disabled={sheet.status === 'approved'}>Approve</button>
-                        <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => openTimesheetAction(sheet, 'needs_changes')} disabled={sheet.status === 'needs_changes'}>Need Changes</button>
-                        <button type="button" className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => openTimesheetAction(sheet, 'rejected')} disabled={sheet.status === 'rejected'}>Reject</button>
                         <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => setHistoryPreview(sheet)}>History</button>
+                        <button type="button" className="rounded-md border border-emerald-100 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-600 transition hover:bg-emerald-100 dark:border-emerald-900/40 dark:bg-emerald-900/20 dark:text-emerald-300" onClick={() => { setTimesheetAction(sheet); setTimesheetActionForm({ action: 'approve', comment: '' }); }}>Approve</button>
+                        <button type="button" className="rounded-md border border-orange-100 bg-orange-50 px-3 py-1 text-xs font-semibold text-orange-600 transition hover:bg-orange-100 dark:border-orange-900/40 dark:bg-orange-900/20 dark:text-orange-300" onClick={() => { setTimesheetAction(sheet); setTimesheetActionForm({ action: 'needs_changes', comment: '' }); }}>Changes</button>
+                        <button type="button" className="rounded-md border border-amber-100 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-600 transition hover:bg-amber-100 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300" onClick={() => { setTimesheetAction(sheet); setTimesheetActionForm({ action: 'revoke', comment: '' }); }}>Revoke</button>
+                        <button type="button" className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => { setTimesheetAction(sheet); setTimesheetActionForm({ action: 'reject', comment: '' }); }}>Reject</button>
                         <button type="button" className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => deleteTimesheetAsAdmin(sheet)}>Delete</button>
                       </div>
                     </td>
@@ -1200,9 +1182,9 @@ export default function AdminPage() {
                 {request.content ? <p className="mt-1 text-xs text-slate-600 dark:text-slate-300">{request.content}</p> : null}
                 {request.approval_comment ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Comment: {request.approval_comment}</p> : null}
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => openLeaveAction(request, 'approved')} disabled={request.status === 'approved'}>Approve</button>
-                  <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => openLeaveAction(request, 'rejected')} disabled={request.status === 'rejected'}>Reject</button>
                   <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => setHistoryPreview(request)}>History</button>
+                  <button type="button" className="rounded-md border border-emerald-100 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-600 transition hover:bg-emerald-100 dark:border-emerald-900/40 dark:bg-emerald-900/20 dark:text-emerald-300" onClick={() => { setLeaveAction(request); setLeaveActionForm({ action: 'approve', comment: '' }); }} disabled={request.status !== 'pending'}>Approve</button>
+                  <button type="button" className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => { setLeaveAction(request); setLeaveActionForm({ action: 'reject', comment: '' }); }} disabled={request.status !== 'pending'}>Reject</button>
                 </div>
               </div>
             ))}
@@ -1214,6 +1196,7 @@ export default function AdminPage() {
               <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
                 <th className="py-2">Type</th>
                 <th>Period</th>
+                <th>Days</th>
                 <th>Subject</th>
                 <th>Content</th>
                 <th>Status</th>
@@ -1227,6 +1210,7 @@ export default function AdminPage() {
                 <tr key={request.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
                   <td className="py-2">{request.leave_type}</td>
                   <td>{request.start_date} to {request.end_date}</td>
+                  <td className="font-semibold">{leaveDays(request.start_date, request.end_date)}d</td>
                   <td className="max-w-[180px] truncate">{request.subject}</td>
                   <td className="max-w-[220px] truncate">{request.content}</td>
                   <td className="capitalize">{request.status}</td>
@@ -1234,17 +1218,16 @@ export default function AdminPage() {
                   <td className="max-w-[180px] truncate">{request.approval_comment || '—'}</td>
                   <td>
                     <div className="flex flex-wrap gap-2">
-                      <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => openLeaveAction(request, 'approved')} disabled={request.status === 'approved'}>Approve</button>
-                      <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => openLeaveAction(request, 'rejected')} disabled={request.status === 'rejected'}>Reject</button>
-                      <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => openLeaveAction(request, 'pending')} disabled={request.status === 'pending'}>Pending</button>
                       <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => setHistoryPreview(request)}>History</button>
+                      <button type="button" className="rounded-md border border-emerald-100 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-600 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-emerald-900/40 dark:bg-emerald-900/20 dark:text-emerald-300" onClick={() => { setLeaveAction(request); setLeaveActionForm({ action: 'approve', comment: '' }); }} disabled={request.status !== 'pending'}>Approve</button>
+                      <button type="button" className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => { setLeaveAction(request); setLeaveActionForm({ action: 'reject', comment: '' }); }} disabled={request.status !== 'pending'}>Reject</button>
                     </div>
                   </td>
                 </tr>
               ))}
               {!filteredLeaveRequests.length ? (
                 <tr>
-                  <td className="py-3 text-slate-500" colSpan={8}>No leave requests match the selected filter.</td>
+                  <td className="py-3 text-slate-500" colSpan={9}>No leave requests match the selected filter.</td>
                 </tr>
               ) : null}
             </tbody>
@@ -1349,10 +1332,9 @@ export default function AdminPage() {
                   <p className="mt-2 font-semibold">₹{Number(entry.amount).toFixed(2)}</p>
                   {entry.approval_comment ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">{entry.approval_comment}</p> : null}
                   <div className="mt-3 flex flex-wrap gap-2">
-                    <button type="button" className="btn-primary px-3 py-1 text-xs" onClick={() => openStatusAction(entry, 'approved')} disabled={entry.status === 'approved'}>Approve</button>
-                    <button type="button" className="btn-secondary px-3 py-1 text-xs" onClick={() => openStatusAction(entry, 'rejected')} disabled={entry.status === 'rejected'}>Reject</button>
-                    <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => openStatusAction(entry, 'pending')} disabled={entry.status === 'pending'}>Pending</button>
                     <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => setHistoryPreview(entry)}>History</button>
+                    <button type="button" className="rounded-md border border-emerald-100 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-600 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-emerald-900/40 dark:bg-emerald-900/20 dark:text-emerald-300" onClick={() => { setExpenseAction(entry); setExpenseActionForm({ action: 'approve', comment: '' }); }} disabled={entry.status !== 'pending'}>Approve</button>
+                    <button type="button" className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => { setExpenseAction(entry); setExpenseActionForm({ action: 'reject', comment: '' }); }} disabled={entry.status !== 'pending'}>Reject</button>
                     <button type="button" className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => deleteExpenseAsAdmin(entry)}>Delete</button>
                   </div>
                 </div>
@@ -1417,44 +1399,10 @@ export default function AdminPage() {
                     </td>
                     <td>
                       <div className="flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          className="btn-primary px-3 py-1 text-xs"
-                          onClick={() => openStatusAction(entry, 'approved')}
-                          disabled={entry.status === 'approved'}
-                        >
-                          Approve
-                        </button>
-                        <button
-                          type="button"
-                          className="btn-secondary px-3 py-1 text-xs"
-                          onClick={() => openStatusAction(entry, 'rejected')}
-                          disabled={entry.status === 'rejected'}
-                        >
-                          Reject
-                        </button>
-                        <button
-                          type="button"
-                          className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]"
-                          onClick={() => openStatusAction(entry, 'pending')}
-                          disabled={entry.status === 'pending'}
-                        >
-                          Pending
-                        </button>
-                        <button
-                          type="button"
-                          className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]"
-                          onClick={() => setHistoryPreview(entry)}
-                        >
-                          History
-                        </button>
-                        <button
-                          type="button"
-                          className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300"
-                          onClick={() => deleteExpenseAsAdmin(entry)}
-                        >
-                          Delete
-                        </button>
+                        <button type="button" className="rounded-md border border-[#dddddd] bg-white px-3 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => setHistoryPreview(entry)}>History</button>
+                        <button type="button" className="rounded-md border border-emerald-100 bg-emerald-50 px-3 py-1 text-xs font-semibold text-emerald-600 transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-emerald-900/40 dark:bg-emerald-900/20 dark:text-emerald-300" onClick={() => { setExpenseAction(entry); setExpenseActionForm({ action: 'approve', comment: '' }); }} disabled={entry.status !== 'pending'}>Approve</button>
+                        <button type="button" className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => { setExpenseAction(entry); setExpenseActionForm({ action: 'reject', comment: '' }); }} disabled={entry.status !== 'pending'}>Reject</button>
+                        <button type="button" className="rounded-md border border-red-100 bg-red-50 px-3 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => deleteExpenseAsAdmin(entry)}>Delete</button>
                       </div>
                     </td>
                   </tr>
@@ -1470,74 +1418,11 @@ export default function AdminPage() {
         </div>
       ) : null}
 
-
-      <Modal
-        title={statusAction ? `Update Expense to ${statusAction.status}` : 'Update Expense Status'}
-        open={Boolean(statusAction)}
-        onClose={() => { setStatusAction(null); setStatusComment(''); }}
-      >
-        {statusAction ? (
-          <div className="space-y-4">
-            <div className="rounded-lg border border-[#dddddd] p-3 text-sm dark:border-[#444]">
-              <p><span className="font-semibold">Date:</span> {statusAction.entry.date}</p>
-              <p><span className="font-semibold">Project:</span> {statusAction.entry.project || '-'}</p>
-              <p><span className="font-semibold">Amount:</span> ₹{Number(statusAction.entry.amount || 0).toFixed(2)}</p>
-            </div>
-
-            <div>
-              <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                Comment (optional)
-              </label>
-              <textarea
-                rows={3}
-                value={statusComment}
-                onChange={(event) => setStatusComment(event.target.value)}
-                placeholder="Add reason or context for this status update"
-                className="mt-2 w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]"
-              />
-            </div>
-
-            <div className="flex justify-end gap-2">
-              <button type="button" className="btn-secondary" onClick={() => { setStatusAction(null); setStatusComment(''); }}>Cancel</button>
-              <button type="button" className="btn-primary" onClick={updateStatus}>Save</button>
-            </div>
-          </div>
-        ) : null}
-      </Modal>
-
-      <Modal
-        title={timesheetAction ? `Update Weekly Timesheet to ${timesheetAction.status}` : 'Update Weekly Timesheet Status'}
-        open={Boolean(timesheetAction)}
-        onClose={() => { setTimesheetAction(null); setTimesheetComment(''); }}
-      >
-        {timesheetAction ? (
-          <div className="space-y-4">
-            <div className="rounded-lg border border-[#dddddd] p-3 text-sm dark:border-[#444]">
-              <p><span className="font-semibold">Week:</span> {timesheetAction.sheet.week_start} to {timesheetAction.sheet.week_end}</p>
-              <p><span className="font-semibold">Hours:</span> {Number(timesheetAction.sheet.total_hours || 0).toFixed(2)}h</p>
-              <p><span className="font-semibold">Status:</span> {timesheetAction.sheet.status}</p>
-            </div>
-
-            <div>
-              <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                Comment (optional)
-              </label>
-              <textarea
-                rows={3}
-                value={timesheetComment}
-                onChange={(event) => setTimesheetComment(event.target.value)}
-                placeholder="Add a note for the employee"
-                className="mt-2 w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]"
-              />
-            </div>
-
-            <div className="flex justify-end gap-2">
-              <button type="button" className="btn-secondary" onClick={() => { setTimesheetAction(null); setTimesheetComment(''); }}>Cancel</button>
-              <button type="button" className="btn-primary" onClick={updateTimesheetStatus}>Save</button>
-            </div>
-          </div>
-        ) : null}
-      </Modal>
+      {adminTab === 'audit_logs' ? (
+        <div className="card p-4 w-full">
+          <AuditLogsViewer />
+        </div>
+      ) : null}
 
       <Modal
         title={historyPreview
@@ -1593,42 +1478,76 @@ export default function AdminPage() {
       </Modal>
 
       <Modal
-        title={leaveAction ? `Update Leave Request to ${leaveAction.status}` : 'Update Leave Status'}
+        title={`Leave Review - ${leaveAction?.subject || 'Leave Request'}`}
         open={Boolean(leaveAction)}
-        onClose={() => { setLeaveAction(null); setLeaveComment(''); }}
+        onClose={() => { setLeaveAction(null); setLeaveActionForm({ action: 'approve', comment: '' }); }}
       >
         {leaveAction ? (
           <div className="space-y-4">
             <div className="rounded-lg border border-[#dddddd] p-3 text-sm dark:border-[#444]">
-              <p><span className="font-semibold">Type:</span> {leaveAction.request.leave_type}</p>
-              <p><span className="font-semibold">Period:</span> {leaveAction.request.start_date} to {leaveAction.request.end_date}</p>
-              <p><span className="font-semibold">Subject:</span> {leaveAction.request.subject}</p>
-              <p><span className="font-semibold">Current Status:</span> {leaveAction.request.status}</p>
+              <p><span className="font-semibold">Type:</span> {leaveAction.leave_type}</p>
+              <p><span className="font-semibold">Period:</span> {leaveAction.start_date} to {leaveAction.end_date} ({leaveDays(leaveAction.start_date, leaveAction.end_date)} days)</p>
+              <p><span className="font-semibold">Subject:</span> {leaveAction.subject}</p>
+              {leaveAction.content ? <p><span className="font-semibold">Content:</span> {leaveAction.content}</p> : null}
             </div>
-
             <div>
-              <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
-                Comment (optional)
-              </label>
-              <textarea
-                rows={3}
-                value={leaveComment}
-                onChange={(event) => setLeaveComment(event.target.value)}
-                placeholder="Add a note for the employee"
-                className="mt-2 w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]"
-              />
+              <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Action</label>
+              <select value={leaveActionForm.action} onChange={(e) => setLeaveActionForm({ ...leaveActionForm, action: e.target.value })} className="mt-2 w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]">
+                <option value="approve">Approve</option>
+                <option value="reject">Reject</option>
+              </select>
             </div>
-
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Comment (optional)</label>
+              <textarea value={leaveActionForm.comment} onChange={(e) => setLeaveActionForm({ ...leaveActionForm, comment: e.target.value })} rows={3} placeholder={leaveActionForm.action === 'reject' ? 'Reason for rejection...' : 'Approval notes (optional)...'} className="mt-2 w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]" />
+            </div>
             <div className="flex justify-end gap-2">
-              <button type="button" className="btn-secondary" onClick={() => { setLeaveAction(null); setLeaveComment(''); }}>Cancel</button>
-              <button type="button" className="btn-primary" onClick={updateLeaveStatus}>Save</button>
+              <button type="button" className="btn-secondary" onClick={() => { setLeaveAction(null); setLeaveActionForm({ action: 'approve', comment: '' }); }}>Cancel</button>
+              <button type="button" className="btn-primary" onClick={updateLeaveStatus}>Submit Review</button>
             </div>
           </div>
         ) : null}
       </Modal>
 
       <Modal
-        title={receiptPreview?.title || 'Receipt Preview'}
+        title={`Expense Review - ${expenseAction?.date || 'Expense'}`}
+        open={Boolean(expenseAction)}
+        onClose={() => { setExpenseAction(null); setExpenseActionForm({ action: 'approve', comment: '' }); }}
+      >
+        {expenseAction ? (
+          <div className="space-y-4">
+            <div className="rounded-lg border border-[#dddddd] p-3 text-sm dark:border-[#444]">
+              <p><span className="font-semibold">Date:</span> {expenseAction.date}</p>
+              <p><span className="font-semibold">Time:</span> {expenseAction.expense_time?.slice(0, 5) || '—'}</p>
+              <p><span className="font-semibold">Project:</span> {expenseAction.project || '-'}</p>
+              <p><span className="font-semibold">Category:</span> {formatExpenseCategoryList(expenseAction)}</p>
+              <p><span className="font-semibold">Amount:</span> ₹{Number(expenseAction.amount || 0).toFixed(2)}</p>
+              <p><span className="font-semibold">Current Status:</span> {expenseAction.status || '-'}</p>
+              {expenseAction.notes ? <p><span className="font-semibold">Notes:</span> {expenseAction.notes}</p> : null}
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Action</label>
+              <select value={expenseActionForm.action} onChange={(e) => setExpenseActionForm({ ...expenseActionForm, action: e.target.value })} className="mt-2 w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]">
+                <option value="approve">Approve</option>
+                <option value="reject">Reject</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">Comment (optional)</label>
+              <textarea value={expenseActionForm.comment} onChange={(e) => setExpenseActionForm({ ...expenseActionForm, comment: e.target.value })} rows={3} placeholder={expenseActionForm.action === 'reject' ? 'Reason for rejection...' : 'Approval notes (optional)...'} className="mt-2 w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]" />
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <button type="button" className="btn-secondary" onClick={() => { setExpenseAction(null); setExpenseActionForm({ action: 'approve', comment: '' }); }}>Cancel</button>
+              <button type="button" className="btn-primary" onClick={updateExpenseStatus}>Submit Review</button>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal
         open={Boolean(receiptPreview)}
         onClose={() => setReceiptPreview(null)}
       >
@@ -1690,6 +1609,63 @@ export default function AdminPage() {
             <div className="flex justify-end gap-2">
               <button type="button" className="btn-secondary" onClick={() => { setReimbursementAction(null); setReimbursementForm({ payment_mode: 'bank_transfer', transaction_reference: '' }); }}>Cancel</button>
               <button type="button" className="btn-primary" onClick={markReimbursementPaid}>Mark Paid</button>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal
+        title={`Timesheet Review - Week ${timesheetAction?.week_start}`}
+        open={Boolean(timesheetAction)}
+        onClose={() => { setTimesheetAction(null); setTimesheetActionForm({ action: 'approve', comment: '' }); }}
+      >
+        {timesheetAction ? (
+          <div className="space-y-4">
+            <div className="rounded-lg border border-[#dddddd] p-3 text-sm dark:border-[#444]">
+              <p><span className="font-semibold">Period:</span> {timesheetAction.week_start} to {timesheetAction.week_end}</p>
+              <p><span className="font-semibold">Total Hours:</span> {Number(timesheetAction.total_hours || 0).toFixed(2)}h</p>
+              <p><span className="font-semibold">Current Status:</span> {timesheetAction.status || '-'}</p>
+              {timesheetAction.approval_comment ? <p><span className="font-semibold">Previous Comment:</span> {timesheetAction.approval_comment}</p> : null}
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                Action
+              </label>
+              <select
+                value={timesheetActionForm.action}
+                onChange={(e) => setTimesheetActionForm({ ...timesheetActionForm, action: e.target.value })}
+                className="mt-2 w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]"
+              >
+                <option value="approve">Approve</option>
+                <option value="needs_changes">Needs Changes</option>
+                <option value="revoke">Revoke</option>
+                <option value="reject">Reject</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                Comment (optional)
+              </label>
+              <textarea
+                value={timesheetActionForm.comment}
+                onChange={(e) => setTimesheetActionForm({ ...timesheetActionForm, comment: e.target.value })}
+                placeholder={
+                  timesheetActionForm.action === 'needs_changes' 
+                    ? 'Specify what changes are needed...'
+                    : timesheetActionForm.action === 'reject'
+                    ? 'Explain why the timesheet is being rejected...'
+                    : 'Add approval notes (optional)...'
+                }
+                className="mt-2 w-full rounded-lg border border-[#dddddd] bg-white px-3 py-2 text-sm outline-none transition focus:border-teal dark:border-[#444] dark:bg-[#2b2b2b]"
+                rows="4"
+              />
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <button type="button" className="btn-secondary" onClick={() => { setTimesheetAction(null); setTimesheetActionForm({ action: 'approve', comment: '' }); }}>Cancel</button>
+              <button type="button" className="btn-primary" onClick={updateTimesheetStatus}>Submit Review</button>
             </div>
           </div>
         ) : null}

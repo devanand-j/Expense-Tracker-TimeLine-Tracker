@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useCallback, useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import DatePicker from '../components/DatePicker';
 import Modal from '../components/Modal';
@@ -16,6 +16,7 @@ import {
   hasExpenseCategory
 } from '../lib/expenseCategories';
 import { supabase } from '../lib/supabaseClient';
+import { toDateKey, todayKey, formatDate } from '../lib/time';
 import { validatePositiveAmount } from '../utils/validation';
 
 function normalizeStatusHistory(value) {
@@ -55,6 +56,13 @@ function saveCustomProject(name) {
   }
 }
 
+function getCurrentTimeValue() {
+  const now = new Date();
+  const hours = String(now.getHours()).padStart(2, '0');
+  const minutes = String(now.getMinutes()).padStart(2, '0');
+  return `${hours}:${minutes}`;
+}
+
 const defaultForm = {
   id: null,
   date: '',
@@ -69,21 +77,8 @@ const defaultForm = {
 
 const WEEK_DAY_KEYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
 
-function todayKey() {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = String(now.getMonth() + 1).padStart(2, '0');
-  const day = String(now.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
-
-function dateKeyFromDate(value) {
-  const date = value instanceof Date ? value : new Date(value);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-}
+// Use shared date helpers from lib/time
+const dateKeyFromDate = toDateKey;
 
 function addDays(dateKey, days) {
   const date = new Date(`${dateKey}T00:00:00`);
@@ -101,6 +96,13 @@ function collectApprovedTimesheetDays(sheets) {
   const result = new Set();
   (sheets || []).forEach((sheet) => {
     if (sheet.status !== 'approved') return;
+    if (Array.isArray(sheet.approved_days) && sheet.approved_days.length > 0) {
+      sheet.approved_days.forEach((dateStr) => {
+        if (dateStr) result.add(String(dateStr).slice(0, 10));
+      });
+      return;
+    }
+
     if (!sheet.week_start || !Array.isArray(sheet.rows)) return;
     sheet.rows.forEach((row) => {
       WEEK_DAY_KEYS.forEach((dayKey, idx) => {
@@ -148,12 +150,13 @@ export default function ExpensePage() {
   const approvedTimesheetDateSet = useMemo(() => new Set(approvedTimesheetDays), [approvedTimesheetDays]);
   const approvedLeaveDateSet = useMemo(() => new Set(approvedLeaveDays), [approvedLeaveDays]);
 
-  // #1: Orphan detection — expense dates no longer backed by a filled timesheet or approved leave
+  // #1: Orphan detection â€” expense dates no longer backed by a filled timesheet or approved leave
   const orphanExpenseDates = useMemo(() => {
     if (isAdmin) return new Set();
     const orphans = new Set();
     items.forEach((entry) => {
       if (entry.status === 'approved') return; // approved expenses are immutable, skip
+      if (entry.status === 'draft') return; // draft expenses are work-in-progress, skip
       if (!entry.date) return;
       const onLeave = approvedLeaveDateSet.has(entry.date);
       const onTimesheet = approvedTimesheetDateSet.has(entry.date);
@@ -184,7 +187,7 @@ export default function ExpensePage() {
 
   const isBlockedExpenseDate = (dateValue) => Boolean(getExpenseDateBlockReason(dateValue));
 
-  async function fetchExpenses() {
+  const fetchExpenses = useCallback(async () => {
     let expenseQuery = supabase.from('expenses').select('*, profiles(name)').order('date', { ascending: false });
     if (!isAdmin) expenseQuery = expenseQuery.eq('user_id', user.id);
 
@@ -198,7 +201,7 @@ export default function ExpensePage() {
 
     const approvedTimesheetQuery = isAdmin
       ? Promise.resolve({ data: [], error: null })
-      : supabase.from('weekly_timesheets').select('week_start, status, rows').eq('user_id', user.id);
+      : supabase.from('weekly_timesheets').select('week_start, status, approved_days, rows').eq('user_id', user.id);
 
     const leaveQuery = isAdmin
       ? Promise.resolve({ data: [], error: null })
@@ -227,7 +230,7 @@ export default function ExpensePage() {
     setOffsiteDates([...(new Set((offsiteRes.data || []).map((entry) => entry.date).filter(Boolean)))]);
     setApprovedTimesheetDays([...collectApprovedTimesheetDays(approvedTimesheetRes.data || [])]);
     setApprovedLeaveDays([...collectApprovedLeaveDays(leaveRes.data || [])]);
-  }
+  }, [profile?.role, user.id]);
 
   useEffect(() => {
     void fetchExpenses();
@@ -237,26 +240,13 @@ export default function ExpensePage() {
     if (!user?.id || isAdmin) return undefined;
 
     const channel = supabase
-      .channel(`expense-eligibility-${user.id}`)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'weekly_timesheets', filter: `user_id=eq.${user.id}` }, () => { void fetchExpenses(); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'leave_requests', filter: `user_id=eq.${user.id}` }, () => { void fetchExpenses(); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'timeline_entries', filter: `user_id=eq.${user.id}` }, () => { void fetchExpenses(); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'employee_project_assignments', filter: `user_id=eq.${user.id}` }, () => { void fetchExpenses(); })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'projects' }, () => { void fetchExpenses(); })
-      // #10: Real-time approval notifications for expenses
-      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'expenses', filter: `user_id=eq.${user.id}` }, (payload) => {
-        const newStatus = payload.new?.status;
-        const oldStatus = payload.old?.status;
-        if (newStatus && newStatus !== oldStatus) {
-          if (newStatus === 'approved') toast.success(`Expense on ${payload.new.date} was approved!`);
-          else if (newStatus === 'rejected') toast.error(`Expense on ${payload.new.date} was rejected.`);
-        }
+      .channel(`expenses-notify-${user.id}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'expenses', filter: `user_id=eq.${user.id}` }, () => {
         void fetchExpenses();
       });
-
     channel.subscribe();
     return () => { void supabase.removeChannel(channel); };
-  }, [user?.id, isAdmin]);
+  }, [user?.id, isAdmin, fetchExpenses]);
 
   const filtered = useMemo(() => items.filter((entry) => {
     if (filters.category && !hasExpenseCategory(entry, filters.category)) return false;
@@ -275,6 +265,7 @@ export default function ExpensePage() {
 
     if (!form.date) return toast.error('Date is required.');
     if (!form.project) return toast.error('Project is required.');
+    if (!form.expense_time) return toast.error('Time is required.');
     if (!isAdmin && !availableProjects.includes(form.project) && !customProjects.includes(form.project)) return toast.error('Selected project is not assigned to you.');
     if (!form.categories.length) return toast.error('Select at least one category.');
 
@@ -321,7 +312,8 @@ export default function ExpensePage() {
   const remove = async (id) => {
     const target = items.find((entry) => entry.id === id);
     if (target && !canModifyExpense(target)) return toast.error('Approved expenses cannot be deleted.');
-
+    const ok = window.confirm('Delete this expense? This cannot be undone.');
+    if (!ok) return;
     const { error } = await supabase.from('expenses').delete().eq('id', id);
     if (error) return toast.error(error.message);
     toast.success('Expense deleted');
@@ -343,6 +335,7 @@ export default function ExpensePage() {
     setForm({
       ...defaultForm,
       date: defaultDate,
+      expense_time: getCurrentTimeValue(),
       project: availableProjects[0] || '',
       categories: [EXPENSE_CATEGORIES[0]]
     });
@@ -358,6 +351,7 @@ export default function ExpensePage() {
     setForm({
       ...defaultForm,
       ...entry,
+      expense_time: entry.expense_time || getCurrentTimeValue(),
       project: entry.project || '',
       categories: extractExpenseCategories(entry)
     });
@@ -382,7 +376,7 @@ export default function ExpensePage() {
       <div className="card grid gap-3 p-4 dark:border-slate-700 dark:bg-slate-800 md:grid-cols-5">
         <select className="field dark:border-slate-600 dark:bg-slate-700 dark:text-white" value={filters.category} onChange={(e) => setFilters((x) => ({ ...x, category: e.target.value }))}>
           <option value="">All Categories</option>
-          {EXPENSE_CATEGORIES.map((category) => <option key={category} value={category}>{EXPENSE_CATEGORY_ICONS[category]} {category}</option>)}
+          {EXPENSE_CATEGORIES.map((category) => <option key={category} value={category}>{category}</option>)}
         </select>
         <select className="field dark:border-slate-600 dark:bg-slate-700 dark:text-white" value={filters.project} onChange={(e) => setFilters((x) => ({ ...x, project: e.target.value }))}>
           <option value="">All Projects</option>
@@ -412,12 +406,15 @@ export default function ExpensePage() {
               ) : null}
               {filtered.map((entry) => (
                 <tr key={entry.id} className="group transition hover:bg-slate-50/90 dark:hover:bg-slate-700/35">
-                  <td className="px-4 py-3 font-medium text-ink dark:text-slate-100">{new Date(`${entry.date}T00:00:00`).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</td>
+                  <td className="px-4 py-3 font-medium text-ink dark:text-slate-100">{formatDate(entry.date)}</td>
                   <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{entry.expense_time?.slice(0, 5) || '—'}</td>
                   <td className="px-4 py-3 text-slate-600 dark:text-slate-300">{entry.project || '—'}</td>
                   <td className="px-4 py-3">
                     <span className="flex items-center gap-1.5">
-                      <span>{EXPENSE_CATEGORY_ICONS[getPrimaryExpenseCategory(entry)]}</span>
+                      {(() => {
+                        const IconComponent = EXPENSE_CATEGORY_ICONS[getPrimaryExpenseCategory(entry)];
+                        return IconComponent ? <IconComponent className="h-4 w-4" /> : null;
+                      })()}
                       <span className="text-slate-700 dark:text-slate-200">{formatExpenseCategoryList(entry)}</span>
                     </span>
                   </td>
@@ -431,14 +428,14 @@ export default function ExpensePage() {
                   <td className="px-4 py-3">{Array.isArray(entry.conflict_flags) && entry.conflict_flags.length ? entry.conflict_flags.join(', ') : '—'}</td>
                   <td className="max-w-[160px] truncate px-4 py-3 text-slate-500 dark:text-slate-400">{entry.notes || '—'}</td>
                   <td className="px-4 py-3">
-                    {entry.receipt_url ? <a href={entry.receipt_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg bg-teal/10 px-2.5 py-1 text-xs font-semibold text-teal hover:bg-teal/20 transition dark:bg-teal/20 dark:text-teal-300">View</a> : <span className="text-slate-300 dark:text-slate-600">—</span>}
+                    {entry.receipt_url ? <a href={entry.receipt_url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-lg bg-teal/10 px-2.5 py-1 text-xs font-semibold text-teal hover:bg-teal/20 transition dark:bg-teal/20 dark:text-teal-300">View</a> : <span className="text-slate-300 dark:text-slate-600">â€”</span>}
                   </td>
                   {profile?.role === 'admin' ? <td className="px-4 py-3 text-slate-500 dark:text-slate-400">{entry.profiles?.name}</td> : null}
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-1.5 opacity-0 transition group-hover:opacity-100">
-                      <button onClick={() => setHistoryItem(entry)} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600 shadow-sm transition hover:border-teal/40 hover:text-teal dark:border-slate-600 dark:bg-slate-700 dark:text-slate-300">History</button>
-                      <button onClick={() => openEdit(entry)} className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600 shadow-sm transition hover:border-teal/40 hover:text-teal disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-300" disabled={!canModifyExpense(entry)}>Edit</button>
-                      <button onClick={() => remove(entry.id)} className="rounded-lg border border-red-100 bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-500 shadow-sm transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-400" disabled={!canModifyExpense(entry)}>Delete</button>
+                      <button onClick={() => setHistoryItem(entry)} aria-label="View status history" className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600 shadow-sm transition hover:border-teal/40 hover:text-teal dark:border-slate-600 dark:bg-slate-700 dark:text-slate-300">History</button>
+                      <button onClick={() => openEdit(entry)} aria-label="Edit expense" className="rounded-lg border border-slate-200 bg-white px-2.5 py-1 text-xs font-semibold text-slate-600 shadow-sm transition hover:border-teal/40 hover:text-teal disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-300" disabled={!canModifyExpense(entry)}>Edit</button>
+                      <button onClick={() => remove(entry.id)} aria-label="Delete expense" className="rounded-lg border border-red-100 bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-500 shadow-sm transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-400" disabled={!canModifyExpense(entry)}>Delete</button>
                     </div>
                   </td>
                 </tr>
@@ -492,7 +489,7 @@ export default function ExpensePage() {
               <option value="">Select Project</option>
               {availableProjects.map((p) => <option key={p} value={p}>{p}</option>)}
               {customProjects.filter((p) => !availableProjects.includes(p)).map((p) => (
-                <option key={p} value={p}>⭐ {p}</option>
+                <option key={p} value={p}>✓ {p}</option>
               ))}
               <option value="__other__">+ Others (type your own)</option>
             </select>
@@ -514,28 +511,33 @@ export default function ExpensePage() {
           </div>
 
           <div>
-            <label className="form-label">Categories <span className="text-red-500">*</span></label>
+            <label className="form-label">Category <span className="text-red-500">*</span></label>
             <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
-              {EXPENSE_CATEGORIES.map((category) => (
-                <label key={category} className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition ${form.categories.includes(category) ? 'border-teal bg-teal text-white shadow shadow-teal/30' : 'border-slate-200 bg-white text-slate-600 hover:border-teal/40 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300'}`}>
-                  <input
-                    type="checkbox"
-                    checked={form.categories.includes(category)}
-                    onChange={(event) => {
-                      const checked = event.target.checked;
-                      setForm((x) => {
-                        const next = new Set(x.categories);
-                        if (checked) next.add(category);
-                        else next.delete(category);
-                        return { ...x, categories: [...next] };
-                      });
-                    }}
-                    className="h-3.5 w-3.5"
-                  />
-                  <span>{EXPENSE_CATEGORY_ICONS[category]}</span>
-                  <span>{category}</span>
-                </label>
-              ))}
+              {EXPENSE_CATEGORIES.map((category) => {
+                const isSelected = form.categories[0] === category;
+                const IconComponent = EXPENSE_CATEGORY_ICONS[category];
+                return (
+                  <label
+                    key={category}
+                    onClick={() => setForm((x) => ({ ...x, categories: [category] }))}
+                    className={`flex cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
+                      isSelected
+                        ? 'border-teal bg-teal text-white shadow shadow-teal/30'
+                        : 'border-slate-200 bg-white text-slate-600 hover:border-teal/40 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="expense-category"
+                      checked={isSelected}
+                      onChange={() => {}}
+                      className="sr-only"
+                    />
+                    {IconComponent && <IconComponent className="h-4 w-4" />}
+                    <span>{category}</span>
+                  </label>
+                );
+              })}
             </div>
           </div>
 
@@ -551,15 +553,15 @@ export default function ExpensePage() {
 
           <ReceiptUpload userId={user.id} currentUrl={form.receipt_url} required onUploaded={(url) => setForm((x) => ({ ...x, receipt_url: url }))} />
 
-          <div className="flex gap-2">
-            {!isAdmin ? (
-              <button className="btn-secondary flex-1 py-3" type="button" disabled={saving} onClick={(e) => submit(e, 'draft')}>
-                {saving ? '...' : 'Save Draft'}
-              </button>
-            ) : null}
-            <button className="btn-primary flex-1 py-3" type="button" disabled={saving} onClick={(e) => submit(e, 'pending')}>
+          <div className="flex flex-col gap-2">
+            <button className="btn-primary w-full py-3" type="button" disabled={saving} onClick={(e) => submit(e, 'pending')}>
               {saving ? <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" /> : (form.id ? 'Update & Submit' : 'Submit Expense')}
             </button>
+            {!isAdmin ? (
+              <button className="w-full py-2 text-sm font-medium text-slate-500 transition hover:text-teal dark:text-slate-400 dark:hover:text-teal" type="button" disabled={saving} onClick={(e) => submit(e, 'draft')}>
+                {saving ? '...' : 'Save as Draft'}
+              </button>
+            ) : null}
           </div>
         </form>
       </Modal>

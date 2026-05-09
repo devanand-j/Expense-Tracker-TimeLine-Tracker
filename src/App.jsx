@@ -11,6 +11,9 @@ import OnboardingPage from './pages/OnboardingPage';
 import ReportsPage from './pages/ReportsPage';
 import ProjectMasterPage from './pages/ProjectMasterPage';
 import TimesheetPage from './pages/TimesheetPage';
+import MaterialTrackingPage from './pages/MaterialTrackingPage';
+import MaterialTrackingAdminPage from './pages/MaterialTrackingAdminPage';
+import NotFoundPage from './pages/NotFoundPage';
 
 function AppShell({ children }) {
   return <Layout>{children}</Layout>;
@@ -133,7 +136,29 @@ export default function App() {
         }
       />
 
-      <Route path="*" element={<Navigate to={user ? '/dashboard' : '/login'} replace />} />
+      <Route
+        path="/material-tracking"
+        element={
+          <ProtectedRoute>
+            <AppShell>
+              <MaterialTrackingPage />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/admin/material-tracking"
+        element={
+          <ProtectedRoute adminOnly>
+            <AppShell>
+              <MaterialTrackingAdminPage />
+            </AppShell>
+          </ProtectedRoute>
+        }
+      />
+
+      <Route path="*" element={user ? <NotFoundPage /> : <Navigate to="/login" replace />} />
     </Routes>
   );
 }

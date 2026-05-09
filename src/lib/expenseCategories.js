@@ -1,3 +1,5 @@
+import { Utensils, Car, ShoppingCart, Wrench, Package, MoreHorizontal } from 'lucide-react';
+
 export const EXPENSE_CATEGORIES = [
   'Food & Beverages',
   'Travel',
@@ -8,12 +10,12 @@ export const EXPENSE_CATEGORIES = [
 ];
 
 export const EXPENSE_CATEGORY_ICONS = {
-  'Food & Beverages': '🍽️',
-  'Travel': '🚕',
-  'Groceries': '🛒',
-  'Tools or Hardware': '🧰',
-  'Porter delivery for Hardware': '📦',
-  'Miscellaneous': '📦'
+  'Food & Beverages': Utensils,
+  'Travel': Car,
+  'Groceries': ShoppingCart,
+  'Tools or Hardware': Wrench,
+  'Porter delivery for Hardware': Package,
+  'Miscellaneous': MoreHorizontal
 };
 
 export const PORTER_EXPENSE_CATEGORY = 'Porter delivery for Hardware';

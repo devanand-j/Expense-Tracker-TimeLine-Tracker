@@ -379,9 +379,9 @@ begin
     raise exception 'Date of Birth must be at least 18 years in the past';
   end if;
 
-  -- Aadhaar strict format: #### #### #### #### (16 digits).
-  if coalesce(data ->> 'aadhaar_number', '') !~ '^\d{4}\s\d{4}\s\d{4}\s\d{4}$' then
-    raise exception 'Aadhaar must be in format #### #### #### ####';
+  -- Aadhaar strict format: #### #### #### (12 digits).
+  if coalesce(data ->> 'aadhaar_number', '') !~ '^\d{4}\s\d{4}\s\d{4}$' then
+    raise exception 'Aadhaar must be in format #### #### ####';
   end if;
 
   -- PAN strict format and entity/sequence checks.
@@ -450,29 +450,44 @@ language plpgsql
 security definer
 set search_path = public
 as $$
+declare
+  approved_day text;
+  row_index integer;
+  old_row jsonb;
+  new_row jsonb;
 begin
   if not public.is_admin(auth.uid()) then
-    if old.status = 'approved' then
-      raise exception 'Approved weekly timesheets cannot be edited by employee';
-    end if;
-
     if old.user_id is distinct from new.user_id then
       raise exception 'Only the owner can update the weekly timesheet';
     end if;
 
-    if old.status not in ('draft', 'needs_changes') then
-      raise exception 'Weekly timesheets can only be edited while in draft or needs_changes';
-    end if;
-
     if old.approval_comment is distinct from new.approval_comment
       or old.reviewed_by is distinct from new.reviewed_by
-      or old.reviewed_at is distinct from new.reviewed_at
-      or old.status_history is distinct from new.status_history then
+      or old.reviewed_at is distinct from new.reviewed_at then
       raise exception 'Only admin can update weekly timesheet approval metadata';
     end if;
 
+    if old.status = 'approved' then
+      if coalesce(array_length(old.approved_days, 1), 0) >= 7 then
+        raise exception 'Approved weekly timesheets cannot be edited by employee';
+      end if;
+
+      for approved_day in select unnest(coalesce(old.approved_days, '{}'::text[])) loop
+        for row_index in 0..greatest(coalesce(jsonb_array_length(coalesce(old.rows, '[]'::jsonb)), 0), coalesce(jsonb_array_length(coalesce(new.rows, '[]'::jsonb)), 0)) - 1 loop
+          old_row := coalesce(old.rows -> row_index, '{}'::jsonb);
+          new_row := coalesce(new.rows -> row_index, '{}'::jsonb);
+
+          if coalesce(trim(old_row ->> approved_day), '') is distinct from coalesce(trim(new_row ->> approved_day), '') then
+            raise exception 'Approved day entries cannot be edited by employee';
+          end if;
+        end loop;
+      end loop;
+    elsif old.status not in ('draft', 'needs_changes', 'rejected') then
+      raise exception 'Weekly timesheets can only be edited while in draft or needs_changes';
+    end if;
+
     if old.status is distinct from new.status
-      and new.status not in ('draft', 'submitted') then
+      and new.status not in ('draft', 'submitted', 'needs_changes') then
       raise exception 'Only admin can set weekly timesheet status beyond submitted';
     end if;
   end if;
@@ -538,6 +553,20 @@ begin
     end if;
   end if;
 
+  -- Check for overlapping approved leave requests
+  if new.status = 'approved' then
+    if exists (
+      select 1
+      from public.leave_requests l
+      where l.user_id = new.user_id
+        and l.id is distinct from new.id
+        and l.status = 'approved'
+        and not (l.end_date < new.start_date or l.start_date > new.end_date)
+    ) then
+      raise exception 'Leave dates overlap with an existing approved leave request';
+    end if;
+  end if;
+
   return new;
 end;
 $$;
@@ -585,7 +614,7 @@ begin
       day_date := new.week_start;
       if not public.is_admin(auth.uid()) then
         if day_date > current_date then raise exception 'Future day entries are not allowed'; end if;
-        if day_date = current_date and localtime < time '11:59' then raise exception 'Current day entries are allowed only after 11:59 AM'; end if;
+        if day_date = current_date and (now() at time zone 'Asia/Kolkata')::time < time '11:59' then raise exception 'Current day entries are allowed only after 11:59 AM IST'; end if;
       end if;
       if value_num > 0 then
         if exists (
@@ -627,7 +656,7 @@ begin
       day_date := new.week_start + 1;
       if not public.is_admin(auth.uid()) then
         if day_date > current_date then raise exception 'Future day entries are not allowed'; end if;
-        if day_date = current_date and localtime < time '11:59' then raise exception 'Current day entries are allowed only after 11:59 AM'; end if;
+        if day_date = current_date and (now() at time zone 'Asia/Kolkata')::time < time '11:59' then raise exception 'Current day entries are allowed only after 11:59 AM IST'; end if;
       end if;
       if value_num > 0 then
         if exists (
@@ -669,7 +698,7 @@ begin
       day_date := new.week_start + 2;
       if not public.is_admin(auth.uid()) then
         if day_date > current_date then raise exception 'Future day entries are not allowed'; end if;
-        if day_date = current_date and localtime < time '11:59' then raise exception 'Current day entries are allowed only after 11:59 AM'; end if;
+        if day_date = current_date and (now() at time zone 'Asia/Kolkata')::time < time '11:59' then raise exception 'Current day entries are allowed only after 11:59 AM IST'; end if;
       end if;
       if value_num > 0 then
         if exists (
@@ -711,7 +740,7 @@ begin
       day_date := new.week_start + 3;
       if not public.is_admin(auth.uid()) then
         if day_date > current_date then raise exception 'Future day entries are not allowed'; end if;
-        if day_date = current_date and localtime < time '11:59' then raise exception 'Current day entries are allowed only after 11:59 AM'; end if;
+        if day_date = current_date and (now() at time zone 'Asia/Kolkata')::time < time '11:59' then raise exception 'Current day entries are allowed only after 11:59 AM IST'; end if;
       end if;
       if value_num > 0 then
         if exists (
@@ -753,7 +782,7 @@ begin
       day_date := new.week_start + 4;
       if not public.is_admin(auth.uid()) then
         if day_date > current_date then raise exception 'Future day entries are not allowed'; end if;
-        if day_date = current_date and localtime < time '11:59' then raise exception 'Current day entries are allowed only after 11:59 AM'; end if;
+        if day_date = current_date and (now() at time zone 'Asia/Kolkata')::time < time '11:59' then raise exception 'Current day entries are allowed only after 11:59 AM IST'; end if;
       end if;
       if value_num > 0 then
         if exists (
@@ -795,7 +824,7 @@ begin
       day_date := new.week_start + 5;
       if not public.is_admin(auth.uid()) then
         if day_date > current_date then raise exception 'Future day entries are not allowed'; end if;
-        if day_date = current_date and localtime < time '11:59' then raise exception 'Current day entries are allowed only after 11:59 AM'; end if;
+        if day_date = current_date and (now() at time zone 'Asia/Kolkata')::time < time '11:59' then raise exception 'Current day entries are allowed only after 11:59 AM IST'; end if;
       end if;
       if value_num > 0 then
         if exists (
@@ -837,7 +866,7 @@ begin
       day_date := new.week_start + 6;
       if not public.is_admin(auth.uid()) then
         if day_date > current_date then raise exception 'Future day entries are not allowed'; end if;
-        if day_date = current_date and localtime < time '11:59' then raise exception 'Current day entries are allowed only after 11:59 AM'; end if;
+        if day_date = current_date and (now() at time zone 'Asia/Kolkata')::time < time '11:59' then raise exception 'Current day entries are allowed only after 11:59 AM IST'; end if;
       end if;
       if value_num > 0 then
         if exists (
@@ -1170,7 +1199,8 @@ security definer
 set search_path = public
 as $$
 begin
-  if new.status = 'approved' then
+  -- Create reimbursement record on INSERT (all statuses) or when amount/date changes
+  if (TG_OP = 'INSERT') or (new.amount is distinct from old.amount) or (new.date is distinct from old.date) then
     insert into public.reimbursement_ledger (
       expense_id,
       user_id,
@@ -1183,23 +1213,18 @@ begin
       new.user_id,
       new.amount,
       coalesce(new.date, current_date) + interval '7 day',
-      'queued'
+      case when new.status = 'approved' then 'queued' else 'cancelled' end
     )
     on conflict (expense_id) do update set
       user_id = excluded.user_id,
       approved_amount = excluded.approved_amount,
       due_date = coalesce(public.reimbursement_ledger.due_date, excluded.due_date),
       payment_status = case
+        when new.status = 'approved' and public.reimbursement_ledger.payment_status in ('cancelled', 'draft') then 'queued'
         when public.reimbursement_ledger.payment_status = 'paid' then 'paid'
-        else 'queued'
+        when new.status in ('rejected', 'pending') then 'cancelled'
+        else public.reimbursement_ledger.payment_status
       end;
-  elsif new.status in ('pending', 'rejected') then
-    update public.reimbursement_ledger
-    set payment_status = case
-      when payment_status = 'paid' then payment_status
-      else 'cancelled'
-    end
-    where expense_id = new.id;
   end if;
 
   return new;
@@ -1238,7 +1263,7 @@ for each row execute function public.validate_expense_payload();
 
 drop trigger if exists trg_sync_reimbursement_ledger_from_expense on public.expenses;
 create trigger trg_sync_reimbursement_ledger_from_expense
-after insert or update of status, amount, date on public.expenses
+after insert or update on public.expenses
 for each row execute function public.sync_reimbursement_ledger_from_expense();
 
 drop trigger if exists trg_set_reimbursement_ledger_updated_at on public.reimbursement_ledger;
@@ -1497,6 +1522,152 @@ on public.leave_requests
 for delete
 using (public.is_admin(auth.uid()));
 
+-- 5) Material tracking tables
+-- Material master catalog (cameras, lenses, accessories)
+create table if not exists public.material_masters (
+  id uuid primary key default gen_random_uuid(),
+  name text not null check (length(trim(name)) > 0),
+  category text not null check (category in ('Camera', 'Lens', 'Accessory')) default 'Accessory',
+  serial_number text unique,
+  quantity integer not null default 1 check (quantity > 0),
+  acquisition_date date,
+  status text not null default 'available' check (status in ('available', 'in_use', 'damaged', 'retired')),
+  notes text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.material_masters add column if not exists quantity integer not null default 1;
+update public.material_masters set quantity = 1 where quantity is null or quantity < 1;
+
+-- Material tracking logs (one record per material movement event)
+create table if not exists public.material_tracking_logs (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  person_name text not null check (length(trim(person_name)) > 0),
+  stage text not null check (stage in ('warehouse_pickup', 'field_arrival', 'return_start', 'warehouse_return')) default 'warehouse_pickup',
+  event_date date not null,
+  event_time time not null,
+  location_latitude numeric(10,8),
+  location_longitude numeric(11,8),
+  location_name text,
+  person_photo_url text,
+  material_set_photo_url text,
+  handed_over_by uuid references public.profiles(id) on delete set null,
+  handed_over_by_name text,
+  notes text,
+  status text not null default 'completed' check (status in ('completed', 'pending')),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+alter table public.material_tracking_logs add column if not exists person_name text;
+alter table public.material_tracking_logs add column if not exists handed_over_by uuid references public.profiles(id) on delete set null;
+alter table public.material_tracking_logs add column if not exists handed_over_by_name text;
+
+-- Material log items (items within each tracking log)
+create table if not exists public.material_log_items (
+  id uuid primary key default gen_random_uuid(),
+  log_id uuid not null references public.material_tracking_logs(id) on delete cascade,
+  material_id uuid not null references public.material_masters(id) on delete restrict,
+  expected_count integer not null check (expected_count > 0),
+  actual_count integer not null check (actual_count >= 0),
+  is_checked boolean not null default false,
+  condition text check (condition in ('good', 'damaged', 'replaced')),
+  notes text,
+  created_at timestamptz not null default now()
+);
+
+-- Indexes for material tracking
+create index if not exists idx_material_tracking_logs_user_id on public.material_tracking_logs(user_id);
+create index if not exists idx_material_tracking_logs_stage on public.material_tracking_logs(stage);
+create index if not exists idx_material_tracking_logs_event_date on public.material_tracking_logs(event_date);
+create index if not exists idx_material_log_items_log_id on public.material_log_items(log_id);
+create index if not exists idx_material_log_items_material_id on public.material_log_items(material_id);
+create index if not exists idx_material_masters_category on public.material_masters(category);
+create index if not exists idx_material_masters_status on public.material_masters(status);
+
+-- RLS: Material Masters
+alter table public.material_masters enable row level security;
+
+drop policy if exists "Material Masters: employees can view" on public.material_masters;
+create policy "Material Masters: employees can view"
+on public.material_masters
+for select
+using (true);
+
+drop policy if exists "Material Masters: admin create/update/delete" on public.material_masters;
+create policy "Material Masters: admin create/update/delete"
+on public.material_masters
+for all
+using (public.is_admin(auth.uid()))
+with check (public.is_admin(auth.uid()));
+
+-- RLS: Material Tracking Logs
+alter table public.material_tracking_logs enable row level security;
+
+drop policy if exists "Material Tracking Logs: owner can view own" on public.material_tracking_logs;
+create policy "Material Tracking Logs: owner can view own"
+on public.material_tracking_logs
+for select
+using (user_id = auth.uid());
+
+drop policy if exists "Material Tracking Logs: owner can insert own" on public.material_tracking_logs;
+create policy "Material Tracking Logs: owner can insert own"
+on public.material_tracking_logs
+for insert
+with check (user_id = auth.uid());
+
+drop policy if exists "Material Tracking Logs: owner can update own" on public.material_tracking_logs;
+create policy "Material Tracking Logs: owner can update own"
+on public.material_tracking_logs
+for update
+using (user_id = auth.uid())
+with check (user_id = auth.uid());
+
+drop policy if exists "Material Tracking Logs: admin can view/update all" on public.material_tracking_logs;
+create policy "Material Tracking Logs: admin can view/update all"
+on public.material_tracking_logs
+for select
+using (public.is_admin(auth.uid()));
+
+drop policy if exists "Material Tracking Logs: admin update all" on public.material_tracking_logs;
+create policy "Material Tracking Logs: admin update all"
+on public.material_tracking_logs
+for update
+using (public.is_admin(auth.uid()))
+with check (public.is_admin(auth.uid()));
+
+-- RLS: Material Log Items
+alter table public.material_log_items enable row level security;
+
+drop policy if exists "Material Log Items: users can view their logs" on public.material_log_items;
+create policy "Material Log Items: users can view their logs"
+on public.material_log_items
+for select
+using (
+  log_id in (
+    select id from public.material_tracking_logs where user_id = auth.uid()
+  )
+);
+
+drop policy if exists "Material Log Items: users can insert to own logs" on public.material_log_items;
+create policy "Material Log Items: users can insert to own logs"
+on public.material_log_items
+for insert
+with check (
+  log_id in (
+    select id from public.material_tracking_logs where user_id = auth.uid()
+  )
+);
+
+drop policy if exists "Material Log Items: admin can view/manage all" on public.material_log_items;
+create policy "Material Log Items: admin can view/manage all"
+on public.material_log_items
+for all
+using (public.is_admin(auth.uid()))
+with check (public.is_admin(auth.uid()));
+
 -- Weekly timesheets RLS
 drop policy if exists "Weekly timesheets: owner insert" on public.weekly_timesheets;
 create policy "Weekly timesheets: owner insert"
@@ -1571,7 +1742,8 @@ insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_typ
 values
   ('receipts', 'receipts', true, 1048576, array['image/jpeg', 'image/png']),
   ('exports', 'exports', true, 10485760, array['application/pdf', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']),
-  ('employee-documents', 'employee-documents', false, 1048576, array['application/pdf', 'image/jpeg', 'image/png'])
+  ('employee-documents', 'employee-documents', false, 1048576, array['application/pdf', 'image/jpeg', 'image/png']),
+  ('material-photos', 'material-photos', true, 2097152, array['image/jpeg', 'image/png', 'image/webp'])
 on conflict (id) do nothing;
 
 -- Storage policies: receipts
@@ -1651,6 +1823,34 @@ to authenticated
 with check (
   bucket_id = 'employee-documents'
   and (storage.foldername(name))[1] = auth.uid()::text
+);
+
+-- Storage policies: material-photos
+drop policy if exists "Material photos: authenticated can upload" on storage.objects;
+create policy "Material photos: authenticated can upload"
+on storage.objects
+for insert
+to authenticated
+with check (
+  bucket_id = 'material-photos'
+);
+
+drop policy if exists "Material photos: authenticated can read" on storage.objects;
+create policy "Material photos: authenticated can read"
+on storage.objects
+for select
+to authenticated
+using (
+  bucket_id = 'material-photos'
+);
+
+drop policy if exists "Material photos: authenticated can delete" on storage.objects;
+create policy "Material photos: authenticated can delete"
+on storage.objects
+for delete
+to authenticated
+using (
+  bucket_id = 'material-photos'
 );
 
 drop policy if exists "Employee documents: owner or admin can read" on storage.objects;

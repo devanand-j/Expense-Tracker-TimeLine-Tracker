@@ -2,29 +2,21 @@ import { useEffect, useMemo, useState } from 'react';
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from 'recharts';
 import toast from 'react-hot-toast';
 import StatCard from '../components/StatCard';
+import PageLoader from '../components/PageLoader';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
 import { categoryShareRows } from '../lib/expenseCategories';
 import { supabase } from '../lib/supabaseClient';
-import { calculateDurationHours } from '../lib/time';
+import { calculateDurationHours, toDateKey, formatDate } from '../lib/time';
 
 function ChartTooltip({ active, payload, label, dark }) {
   if (!active || !payload?.length) return null;
-
   return (
     <div className={`rounded-xl border px-3 py-2 shadow-lg ${dark ? 'border-slate-700 bg-slate-900 text-slate-100' : 'border-slate-200 bg-white text-slate-700'}`}>
       <p className="text-xs font-semibold uppercase tracking-wider opacity-70">{label}</p>
       <p className="mt-1 text-sm font-bold">₹{Number(payload[0].value).toFixed(2)}</p>
     </div>
   );
-}
-
-function toDateKey(value) {
-  const dt = value instanceof Date ? value : new Date(value);
-  const year = dt.getFullYear();
-  const month = String(dt.getMonth() + 1).padStart(2, '0');
-  const day = String(dt.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
 }
 
 function buildMonthCalendar(dateValue) {
@@ -42,26 +34,13 @@ function buildMonthCalendar(dateValue) {
     days.push(new Date(cursor));
     cursor.setDate(cursor.getDate() + 1);
   }
-
   return { monthStart, monthEnd, days };
 }
 
 function dayCellTone({ isLeave, isApprovedTimesheet }) {
-  if (isApprovedTimesheet && isLeave) {
-    return {
-      background: 'linear-gradient(135deg, #7aeb80 50%, #db3050 50%)',
-      color: '#111827'
-    };
-  }
-
-  if (isLeave) {
-    return { background: '#db3050', color: '#ffffff' };
-  }
-
-  if (isApprovedTimesheet) {
-    return { background: '#7aeb80', color: '#111827' };
-  }
-
+  if (isApprovedTimesheet && isLeave) return { background: 'linear-gradient(135deg, #7aeb80 50%, #db3050 50%)', color: '#111827' };
+  if (isLeave) return { background: '#db3050', color: '#ffffff' };
+  if (isApprovedTimesheet) return { background: '#7aeb80', color: '#111827' };
   return { background: '#5a82fa', color: '#ffffff' };
 }
 
@@ -77,6 +56,9 @@ export default function DashboardPage() {
   const [expenses, setExpenses] = useState([]);
   const [leaveRequests, setLeaveRequests] = useState([]);
   const [weeklySheets, setWeeklySheets] = useState([]);
+  const [dataLoading, setDataLoading] = useState(true);
+  // 0 = current month, -1 = previous, etc.
+  const [heatmapOffset, setHeatmapOffset] = useState(0);
 
   const chartColors = dark
     ? ['#2dd4bf', '#60a5fa', '#f9a8d4', '#fbbf24', '#34d399']
@@ -84,70 +66,51 @@ export default function DashboardPage() {
 
   useEffect(() => {
     async function load() {
+      setDataLoading(true);
       const [timelineRes, expenseRes, leaveRes, weeklyRes] = await Promise.all([
-        supabase
-          .from('timeline_entries')
-          .select('*')
-          .eq('user_id', user.id)
-          .order('date', { ascending: false }),
-        supabase
-          .from('expenses')
-          .select('*')
-          .eq('user_id', user.id)
-          .order('date', { ascending: false }),
-        supabase
-          .from('leave_requests')
-          .select('*')
-          .eq('user_id', user.id)
-          .order('start_date', { ascending: false }),
-        supabase
-          .from('weekly_timesheets')
-          .select('*')
-          .eq('user_id', user.id)
-          .order('week_start', { ascending: false })
+        supabase.from('timeline_entries').select('*').eq('user_id', user.id).order('date', { ascending: false }),
+        supabase.from('expenses').select('*').eq('user_id', user.id).order('date', { ascending: false }),
+        supabase.from('leave_requests').select('*').eq('user_id', user.id).order('start_date', { ascending: false }),
+        supabase.from('weekly_timesheets').select('*').eq('user_id', user.id).order('week_start', { ascending: false })
       ]);
 
-      if (timelineRes.error) {
-        toast.error(timelineRes.error.message);
-        return;
-      }
+      setDataLoading(false);
 
-      if (expenseRes.error) {
-        toast.error(expenseRes.error.message);
-        return;
-      }
+      if (timelineRes.error) { toast.error(timelineRes.error.message); return; }
+      if (expenseRes.error) { toast.error(expenseRes.error.message); return; }
 
       setTimeline(timelineRes.data || []);
       setExpenses(expenseRes.data || []);
 
       if (leaveRes.error) {
-        if (!isMissingSchemaTable(leaveRes.error, 'public.leave_requests')) {
-          toast.error(leaveRes.error.message);
-        }
+        if (!isMissingSchemaTable(leaveRes.error, 'public.leave_requests')) toast.error(leaveRes.error.message);
         setLeaveRequests([]);
       } else {
         setLeaveRequests(leaveRes.data || []);
       }
 
       if (weeklyRes.error) {
-        if (!isMissingSchemaTable(weeklyRes.error, 'public.weekly_timesheets')) {
-          toast.error(weeklyRes.error.message);
-        }
+        if (!isMissingSchemaTable(weeklyRes.error, 'public.weekly_timesheets')) toast.error(weeklyRes.error.message);
         setWeeklySheets([]);
       } else {
         setWeeklySheets(weeklyRes.data || []);
       }
     }
-
     load();
   }, [user.id]);
+
+  // Heatmap base date derived from offset
+  const heatmapBaseDate = useMemo(() => {
+    const d = new Date();
+    d.setDate(1);
+    d.setMonth(d.getMonth() + heatmapOffset);
+    return d;
+  }, [heatmapOffset]);
 
   const metrics = useMemo(() => {
     const now = new Date();
     const month = now.getMonth();
     const year = now.getFullYear();
-
-    // Week boundaries (Mon–Sun) as date strings for safe comparison
     const day = now.getDay();
     const mondayOffset = day === 0 ? -6 : 1 - day;
     const monday = new Date(now);
@@ -155,23 +118,15 @@ export default function DashboardPage() {
     monday.setHours(0, 0, 0, 0);
     const weekStartKey = toDateKey(monday);
     const weekEndKey = toDateKey(now);
-
-    // Month boundaries as date strings
     const monthStartKey = `${year}-${String(month + 1).padStart(2, '0')}-01`;
     const monthEndKey = toDateKey(now);
-
-    // Year boundaries - last 1 year of data
     const yearAgoDate = new Date(now);
     yearAgoDate.setFullYear(yearAgoDate.getFullYear() - 1);
     const yearStartKey = toDateKey(yearAgoDate);
     const yearEndKey = toDateKey(now);
 
-    // --- Hours from weekly_timesheets rows ---
     const DAY_KEYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
-
-    let weeklyHours = 0;
-    let monthlyHours = 0;
-    let yearlyHours = 0;
+    let weeklyHours = 0, monthlyHours = 0, yearlyHours = 0;
 
     weeklySheets.forEach((sheet) => {
       if (sheet.status !== 'approved') return;
@@ -188,37 +143,28 @@ export default function DashboardPage() {
       });
     });
 
-    // --- Expenses (approved only, date-string comparison to avoid timezone issues) ---
     const weeklyExpenses = expenses.filter((x) => x.status === 'approved' && x.date >= weekStartKey && x.date <= weekEndKey);
     const monthlyExpenses = expenses.filter((x) => x.status === 'approved' && x.date >= monthStartKey && x.date <= monthEndKey);
     const yearlyExpenses = expenses.filter((x) => x.status === 'approved' && x.date >= yearStartKey && x.date <= yearEndKey);
 
-    const weeklyExpenseTotal = weeklyExpenses.reduce((sum, item) => sum + Number(item.amount), 0);
-    const monthlyExpenseTotal = monthlyExpenses.reduce((sum, item) => sum + Number(item.amount), 0);
-    const yearlyExpenseTotal = yearlyExpenses.reduce((sum, item) => sum + Number(item.amount), 0);
-
     const byCategory = monthlyExpenses.reduce((acc, item) => {
-      categoryShareRows(item).forEach((row) => {
-        acc[row.category] = (acc[row.category] || 0) + row.amount;
-      });
+      categoryShareRows(item).forEach((row) => { acc[row.category] = (acc[row.category] || 0) + row.amount; });
       return acc;
     }, {});
 
-    const categoryData = Object.entries(byCategory).map(([name, value]) => ({ name, value }));
-
     return {
       weeklyHours: weeklyHours.toFixed(2),
-      weeklyExpenseTotal: weeklyExpenseTotal.toFixed(2),
+      weeklyExpenseTotal: weeklyExpenses.reduce((s, x) => s + Number(x.amount), 0).toFixed(2),
       monthlyHours: monthlyHours.toFixed(2),
-      monthlyExpenseTotal: monthlyExpenseTotal.toFixed(2),
+      monthlyExpenseTotal: monthlyExpenses.reduce((s, x) => s + Number(x.amount), 0).toFixed(2),
       yearlyHours: yearlyHours.toFixed(2),
-      yearlyExpenseTotal: yearlyExpenseTotal.toFixed(2),
-      categoryData
+      yearlyExpenseTotal: yearlyExpenses.reduce((s, x) => s + Number(x.amount), 0).toFixed(2),
+      categoryData: Object.entries(byCategory).map(([name, value]) => ({ name, value }))
     };
   }, [weeklySheets, expenses]);
 
   const heatmap = useMemo(() => {
-    const now = new Date();
+    const now = heatmapBaseDate;
     const { monthStart, monthEnd, days } = buildMonthCalendar(now);
     const inMonth = (dateKey) => dateKey >= toDateKey(monthStart) && dateKey <= toDateKey(monthEnd);
 
@@ -227,11 +173,7 @@ export default function DashboardPage() {
         dateKey: toDateKey(date),
         day: date.getDate(),
         inCurrentMonth: date.getMonth() === now.getMonth(),
-        hours: 0,
-        approvedExpense: 0,
-        isLeave: false,
-        isApprovedTimesheet: false,
-        pendingCount: 0
+        hours: 0, approvedExpense: 0, isLeave: false, isApprovedTimesheet: false, pendingCount: 0
       }])
     );
 
@@ -242,7 +184,6 @@ export default function DashboardPage() {
       target.hours += Number(entry.duration || calculateDurationHours(entry.start_time, entry.end_time));
     });
 
-    // Aggregate approved timesheet hours per day into heatmap
     const DAY_KEYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
     weeklySheets.forEach((sheet) => {
       if (sheet.status !== 'approved') return;
@@ -302,24 +243,22 @@ export default function DashboardPage() {
     const cells = days.map((date) => {
       const dateKey = toDateKey(date);
       const entry = dayMap.get(dateKey);
-      return {
-        ...entry,
-        hours: Number(entry.hours.toFixed(2)),
-        approvedExpense: Number(entry.approvedExpense.toFixed(2))
-      };
+      return { ...entry, hours: Number(entry.hours.toFixed(2)), approvedExpense: Number(entry.approvedExpense.toFixed(2)) };
     });
 
     return {
-      monthLabel: monthStart.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' }),
+      monthLabel: formatDate(monthStart),
       cells
     };
-  }, [timeline, expenses, leaveRequests, weeklySheets]);
+  }, [timeline, expenses, leaveRequests, weeklySheets, heatmapBaseDate]);
+
+  if (dataLoading) return <PageLoader message="Loading dashboard…" />;
 
   return (
     <div className="space-y-6">
       <div className="page-header">
         <h1 className="page-title">Dashboard</h1>
-        <p className="page-subtitle">Your activity overview for {new Date().toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}</p>
+        <p className="page-subtitle">Your activity overview for {formatDate(new Date())}</p>
       </div>
 
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
@@ -356,16 +295,7 @@ export default function DashboardPage() {
                   </linearGradient>
                 ))}
               </defs>
-              <Pie
-                data={metrics.categoryData}
-                dataKey="value"
-                nameKey="name"
-                outerRadius={104}
-                innerRadius={54}
-                paddingAngle={3}
-                stroke={dark ? 'rgba(15, 23, 42, 0.92)' : 'rgba(255,255,255,0.96)'}
-                strokeWidth={2}
-              >
+              <Pie data={metrics.categoryData} dataKey="value" nameKey="name" outerRadius={104} innerRadius={54} paddingAngle={3} stroke={dark ? 'rgba(15, 23, 42, 0.92)' : 'rgba(255,255,255,0.96)'} strokeWidth={2}>
                 {metrics.categoryData.map((entry, index) => (
                   <Cell key={entry.name} fill={`url(#pie-gradient-${index % chartColors.length})`} />
                 ))}
@@ -379,10 +309,26 @@ export default function DashboardPage() {
       <div className="card p-5">
         <div className="section-header">
           <h2 className="section-title">Activity Heatmap</h2>
-          <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500 dark:bg-slate-700 dark:text-slate-400">{heatmap.monthLabel}</span>
+          <div className="flex items-center gap-2">
+            <button
+              aria-label="Previous month"
+              onClick={() => setHeatmapOffset((x) => x - 1)}
+              className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-700"
+            >
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
+            </button>
+            <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500 dark:bg-slate-700 dark:text-slate-400">{heatmap.monthLabel}</span>
+            <button
+              aria-label="Next month"
+              onClick={() => setHeatmapOffset((x) => Math.min(0, x + 1))}
+              disabled={heatmapOffset >= 0}
+              className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-slate-700 dark:hover:bg-slate-700"
+            >
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" /></svg>
+            </button>
+          </div>
         </div>
 
-        {/* Legend */}
         <div className="mb-4 flex flex-wrap gap-3 text-xs">
           {[
             { color: 'bg-teal-100 dark:bg-teal-600/60', label: '8h+ worked' },
@@ -407,11 +353,7 @@ export default function DashboardPage() {
           {heatmap.cells.map((cell) => (
             <div
               key={cell.dateKey}
-              className={`min-h-[68px] rounded-xl p-2 text-xs transition-all duration-150 hover:scale-105 hover:shadow-md cursor-default ${
-                cell.inCurrentMonth
-                  ? ''
-                  : 'bg-slate-50 text-slate-200 dark:bg-slate-800/30 dark:text-slate-700'
-              }`}
+              className={`min-h-[68px] rounded-xl p-2 text-xs transition-all duration-150 hover:scale-105 hover:shadow-md cursor-default ${cell.inCurrentMonth ? '' : 'bg-slate-50 text-slate-200 dark:bg-slate-800/30 dark:text-slate-700'}`}
               style={cell.inCurrentMonth ? dayCellTone(cell) : undefined}
               title={`${cell.dateKey} | ${cell.hours}h | ₹${cell.approvedExpense} | Leave: ${cell.isLeave ? 'Yes' : 'No'}`}
             >

@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import { useAuth } from '../context/AuthContext';
 import { supabase } from '../lib/supabaseClient';
+import { toDateKey } from '../lib/time';
 
 const LEAVE_TYPES = [
   { value: 'SL', label: 'Sick Leave (SL)' },
@@ -45,6 +46,13 @@ function formatLeaveType(value) {
   return LEAVE_TYPES.find((item) => item.value === value)?.label || value;
 }
 
+function leaveDays(startDate, endDate) {
+  if (!startDate || !endDate) return 0;
+  const a = new Date(`${startDate}T00:00:00`);
+  const b = new Date(`${endDate}T00:00:00`);
+  return Math.max(0, Math.round((b - a) / 86400000) + 1);
+}
+
 function isMissingSchemaTable(error, tableName) {
   const msg = String(error?.message || '').toLowerCase();
   return msg.includes('could not find the table') && msg.includes(String(tableName || '').toLowerCase());
@@ -66,7 +74,7 @@ export default function LeavePage() {
     return items.filter((item) => item.status === filters.status);
   }, [items, filters.status]);
 
-  async function fetchLeaves() {
+  const fetchLeaves = useCallback(async () => {
     const { data, error } = await supabase
       .from('leave_requests')
       .select('*')
@@ -123,14 +131,14 @@ export default function LeavePage() {
     } else {
       setTimesheetConflicts(new Set());
     }
-  }
+  }, [user.id]);
 
   useEffect(() => {
     if (!user?.id) return;
     void fetchLeaves();
-  }, [user?.id]);
+  }, [user?.id, fetchLeaves]);
 
-  // #10: Real-time leave approval notifications
+  // Real-time leave approval notifications
   useEffect(() => {
     if (!user?.id) return;
     const channel = supabase
@@ -139,14 +147,14 @@ export default function LeavePage() {
         const newStatus = payload.new?.status;
         const oldStatus = payload.old?.status;
         if (newStatus && newStatus !== oldStatus) {
-          if (newStatus === 'approved') toast.success(`Leave request "${payload.new.subject}" was approved!`);
-          else if (newStatus === 'rejected') toast.error(`Leave request "${payload.new.subject}" was rejected.`);
+          if (newStatus === 'approved') toast.success(`Leave "${payload.new.subject}" was approved!`);
+          else if (newStatus === 'rejected') toast.error(`Leave "${payload.new.subject}" was rejected.`);
         }
         void fetchLeaves();
       });
     channel.subscribe();
     return () => { void supabase.removeChannel(channel); };
-  }, [user?.id]);
+  }, [user?.id, fetchLeaves]);
 
   const pendingCount = useMemo(
     () => items.filter((entry) => entry.status === 'pending').length,
@@ -288,6 +296,8 @@ export default function LeavePage() {
   };
 
   const cancelRequest = async (item) => {
+    const ok = window.confirm('Cancel this leave request?');
+    if (!ok) return;
     const nextHistory = [
       ...(Array.isArray(item.status_history) ? item.status_history : []),
       {
@@ -316,6 +326,8 @@ export default function LeavePage() {
   };
 
   const remove = async (id) => {
+    const ok = window.confirm('Delete this leave request permanently?');
+    if (!ok) return;
     const { error } = await supabase.from('leave_requests').delete().eq('id', id);
     if (error) {
       toast.error(error.message);
@@ -372,85 +384,91 @@ export default function LeavePage() {
         </div>
       </div>
 
-      <div className="card overflow-x-auto p-4">
-        <table className="w-full min-w-[980px] text-sm">
-          <thead>
-            <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
-              <th className="py-2">Type</th>
-              <th>Period</th>
-              <th>Subject</th>
-              <th>Content</th>
-              <th>Status</th>
-              <th>Admin Comment</th>
-              <th>Submitted</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((item) => {
-              const editable = ['pending', 'rejected'].includes(item.status);
-              const removable = ['pending', 'rejected', 'cancelled'].includes(item.status);
-              return (
-                <tr key={item.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
-                  <td className="py-2">{formatLeaveType(item.leave_type)}</td>
-                  <td>{item.start_date} to {item.end_date}</td>
-                  <td className="max-w-[180px] truncate">{item.subject}</td>
-                  <td className="max-w-[240px] truncate">{item.content}</td>
-                  <td>
-                    <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${STATUS_STYLES[item.status] || STATUS_STYLES.pending}`}>
-                      {String(item.status || '').replace(/_/g, ' ')}
-                    </span>
-                    {timesheetConflicts.has(item.id) ? (
-                      <span className="ml-1 inline-flex rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-semibold text-orange-600 dark:bg-orange-900/30 dark:text-orange-300" title="Timesheet hours exist on this leave period">⚠ conflict</span>
-                    ) : null}
-                  </td>
-                  <td className="max-w-[180px] truncate">{item.approval_comment || '—'}</td>
-                  <td>{formatDateTime(item.submitted_at || item.created_at)}</td>
-                  <td>
-                    <div className="flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        className="rounded-md border border-[#dddddd] bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] disabled:cursor-not-allowed disabled:opacity-50 dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]"
-                        onClick={() => openEdit(item)}
-                        disabled={!editable}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-md border border-[#dddddd] bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] disabled:cursor-not-allowed disabled:opacity-50 dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]"
-                        onClick={() => cancelRequest(item)}
-                        disabled={item.status !== 'pending'}
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-md border border-[#dddddd] bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]"
-                        onClick={() => setHistoryPreview(item)}
-                      >
-                        History
-                      </button>
-                      <button
-                        type="button"
-                        className="rounded-md border border-red-100 bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300"
-                        onClick={() => remove(item.id)}
-                        disabled={!removable}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-            {!filtered.length ? (
-              <tr>
-                <td colSpan={8} className="py-4 text-center text-slate-500">No leave requests match the selected filter.</td>
+      <div className="card p-4">
+        {/* Mobile cards */}
+        <div className="space-y-3 md:hidden">
+          {filtered.map((item) => {
+            const editable = ['pending', 'rejected'].includes(item.status);
+            const removable = ['pending', 'rejected', 'cancelled'].includes(item.status);
+            const days = leaveDays(item.start_date, item.end_date);
+            return (
+              <div key={item.id} className="rounded-xl border border-[#dddddd] p-3 text-sm dark:border-[#444]">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="font-semibold">{formatLeaveType(item.leave_type)} · {days} day{days !== 1 ? 's' : ''}</p>
+                    <p className="text-xs text-slate-500 dark:text-slate-400">{item.start_date} to {item.end_date}</p>
+                  </div>
+                  <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${STATUS_STYLES[item.status] || STATUS_STYLES.pending}`}>{String(item.status || '').replace(/_/g, ' ')}</span>
+                </div>
+                <p className="mt-1 font-medium">{item.subject}</p>
+                {item.approval_comment ? <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">Comment: {item.approval_comment}</p> : null}
+                {timesheetConflicts.has(item.id) ? <span className="mt-1 inline-flex rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-semibold text-orange-600 dark:bg-orange-900/30 dark:text-orange-300">⚠ conflict</span> : null}
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button type="button" aria-label="Edit" className="rounded-md border border-[#dddddd] bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] disabled:opacity-50 dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200" onClick={() => openEdit(item)} disabled={!editable}>Edit</button>
+                  <button type="button" aria-label="Cancel" className="rounded-md border border-[#dddddd] bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] disabled:opacity-50 dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200" onClick={() => cancelRequest(item)} disabled={item.status !== 'pending'}>Cancel</button>
+                  <button type="button" aria-label="History" className="rounded-md border border-[#dddddd] bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200" onClick={() => setHistoryPreview(item)}>History</button>
+                  <button type="button" aria-label="Delete" className="rounded-md border border-red-100 bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 disabled:opacity-50 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => remove(item.id)} disabled={!removable}>Delete</button>
+                </div>
+              </div>
+            );
+          })}
+          {!filtered.length ? <p className="py-4 text-center text-sm text-slate-400">No leave requests match the selected filter.</p> : null}
+        </div>
+
+        {/* Desktop table */}
+        <div className="hidden overflow-x-auto md:block">
+          <table className="w-full min-w-[980px] text-sm">
+            <thead>
+              <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
+                <th className="py-2">Type</th>
+                <th>Period</th>
+                <th>Days</th>
+                <th>Subject</th>
+                <th>Content</th>
+                <th>Status</th>
+                <th>Admin Comment</th>
+                <th>Submitted</th>
+                <th>Actions</th>
               </tr>
-            ) : null}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {filtered.map((item) => {
+                const editable = ['pending', 'rejected'].includes(item.status);
+                const removable = ['pending', 'rejected', 'cancelled'].includes(item.status);
+                return (
+                  <tr key={item.id} className="border-b border-[#f1f1f1] dark:border-[#444]">
+                    <td className="py-2">{formatLeaveType(item.leave_type)}</td>
+                    <td>{item.start_date} to {item.end_date}</td>
+                    <td className="font-semibold">{leaveDays(item.start_date, item.end_date)}d</td>
+                    <td className="max-w-[180px] truncate">{item.subject}</td>
+                    <td className="max-w-[240px] truncate">{item.content}</td>
+                    <td>
+                      <span className={`inline-flex rounded-full px-2.5 py-0.5 text-xs font-semibold capitalize ${STATUS_STYLES[item.status] || STATUS_STYLES.pending}`}>
+                        {String(item.status || '').replace(/_/g, ' ')}
+                      </span>
+                      {timesheetConflicts.has(item.id) ? (
+                        <span className="ml-1 inline-flex rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-semibold text-orange-600 dark:bg-orange-900/30 dark:text-orange-300" title="Timesheet hours exist on this leave period">⚠ conflict</span>
+                      ) : null}
+                    </td>
+                    <td className="max-w-[180px] truncate">{item.approval_comment || '—'}</td>
+                    <td>{formatDateTime(item.submitted_at || item.created_at)}</td>
+                    <td>
+                      <div className="flex flex-wrap gap-2">
+                        <button type="button" aria-label="Edit" className="rounded-md border border-[#dddddd] bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] disabled:cursor-not-allowed disabled:opacity-50 dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => openEdit(item)} disabled={!editable}>Edit</button>
+                        <button type="button" aria-label="Cancel" className="rounded-md border border-[#dddddd] bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] disabled:cursor-not-allowed disabled:opacity-50 dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => cancelRequest(item)} disabled={item.status !== 'pending'}>Cancel</button>
+                        <button type="button" aria-label="History" className="rounded-md border border-[#dddddd] bg-white px-2.5 py-1 text-xs font-semibold text-slate-700 transition hover:bg-[#f1f1f1] dark:border-[#444] dark:bg-[#2b2b2b] dark:text-slate-200 dark:hover:bg-[#303030]" onClick={() => setHistoryPreview(item)}>History</button>
+                        <button type="button" aria-label="Delete" className="rounded-md border border-red-100 bg-red-50 px-2.5 py-1 text-xs font-semibold text-red-600 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300" onClick={() => remove(item.id)} disabled={!removable}>Delete</button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+              {!filtered.length ? (
+                <tr><td colSpan={9} className="py-4 text-center text-sm text-slate-400">No leave requests match the selected filter.</td></tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <Modal

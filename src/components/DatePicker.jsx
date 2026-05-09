@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { formatDate } from '../lib/time';
 
 const DAYS = ['Su', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa'];
 const MONTHS = ['January','February','March','April','May','June','July','August','September','October','November','December'];
@@ -72,9 +73,7 @@ export default function DatePicker({
     setOpen(false);
   };
 
-  const displayValue = selected
-    ? selected.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
-    : '';
+  const displayValue = selected ? formatDate(selected) : '';
 
   return (
     <div className="relative" ref={ref}>

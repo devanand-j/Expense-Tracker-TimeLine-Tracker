@@ -6,7 +6,8 @@ import { exportReportAsPdfAndUpload, exportReportAsXlsxAndUpload, exportWorkbook
 import { categoryShareRows } from '../lib/expenseCategories';
 import { buildAllStaffTimesheet, buildRangeSummary, formatHoursAsLabel } from '../lib/reporting';
 import { supabase } from '../lib/supabaseClient';
-import { calculateDurationHours } from '../lib/time';
+import { calculateDurationHours, toDateKey, formatDate } from '../lib/time';
+import PageLoader from '../components/PageLoader';
 
 const COLORS = {
   titleFill: 'F4C7A1',
@@ -42,11 +43,7 @@ function formatDownloadTime(dateValue) {
 
 function formatRangeDate(dateValue) {
   if (!dateValue) return '';
-  return new Date(`${dateValue}T00:00:00`).toLocaleDateString('en-GB', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric'
-  }).replace(/\s/g, '-');
+  return formatDate(new Date(`${dateValue}T00:00:00`)).replace(/\s/g, '-');
 }
 
 function formatDownloadLabel(download) {
@@ -56,23 +53,55 @@ function formatDownloadLabel(download) {
 }
 
 function toInputDate(dateValue) {
-  const dt = dateValue instanceof Date ? dateValue : new Date(dateValue);
-  const year = dt.getFullYear();
-  const month = String(dt.getMonth() + 1).padStart(2, '0');
-  const day = String(dt.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  return toDateKey(dateValue instanceof Date ? dateValue : new Date(dateValue));
+}
+
+function expandApprovedWeeklySheetEntries(sheets = [], { startDate = '', endDate = '', employeeId = 'all', project = 'all' } = {}) {
+  const DAY_KEYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+  const rows = [];
+
+  sheets.forEach((sheet) => {
+    if (sheet.status !== 'approved') return;
+    if (employeeId !== 'all' && sheet.user_id !== employeeId) return;
+    if (!sheet.week_start || !Array.isArray(sheet.rows)) return;
+
+    DAY_KEYS.forEach((dayKey, idx) => {
+      const date = new Date(`${sheet.week_start}T00:00:00`);
+      date.setDate(date.getDate() + idx);
+      const dateKey = toInputDate(date);
+      if (startDate && dateKey < startDate) return;
+      if (endDate && dateKey > endDate) return;
+
+      sheet.rows.forEach((row) => {
+        const hours = Number(row[dayKey] || 0);
+        if (hours <= 0) return;
+        if (project !== 'all' && row.project !== project) return;
+
+        rows.push({
+          date: dateKey,
+          duration: hours,
+          project: row.project || 'Unassigned',
+          start_time: '00:00',
+          end_time: '00:00',
+          type: 'timesheet',
+          shift: row.shift || 'day',
+          support_mode: row.support_mode || 'onsite',
+          user_id: sheet.user_id
+        });
+      });
+    });
+  });
+
+  return rows;
 }
 
 function formatDateForTitle(dateValue) {
   if (!dateValue) return '';
-  return new Date(`${dateValue}T00:00:00`).toLocaleDateString('en-GB', {
-    day: '2-digit',
-    month: 'short'
-  }).toUpperCase();
+  return formatDate(new Date(`${dateValue}T00:00:00`)).toUpperCase();
 }
 
 function formatDateForCell(dateValue) {
-  return new Date(`${dateValue}T00:00:00`).toLocaleDateString('en-GB');
+  return formatDate(new Date(`${dateValue}T00:00:00`));
 }
 
 function toSafeSheetName(rawName, usedNames) {
@@ -106,13 +135,9 @@ function createTimesheetWorksheet({ weekLabel, employeeName, rows }) {
       'Date',
       'Day',
       'Project',
-      'OnSite',
-      'Remote Support',
+      'Shift',
+      'Support Mode',
       'Total Hours',
-      'Day Shift Hours',
-      'Night Shift Hours',
-      'On Site timings',
-      'Remote Timings'
     ]
   ];
 
@@ -123,21 +148,17 @@ function createTimesheetWorksheet({ weekLabel, employeeName, rows }) {
       formatDateForCell(row.date),
       row.day,
       row.projectLabel || '-',
-      formatHoursAsLabel(row.onSiteHours),
-      formatHoursAsLabel(row.remoteSupportHours),
+      row.shiftModes || '-',
+      row.supportModes || '-',
       formatHoursAsLabel(row.workingHours),
-      formatHoursAsLabel(row.dayShiftHours),
-      formatHoursAsLabel(row.nightShiftHours),
-      row.onSiteTimings || '-',
-      row.remoteTimings || '-'
     ]);
   });
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!merges'] = [
-    { s: { r: 1, c: 3 }, e: { r: 1, c: 9 } },
+    { s: { r: 1, c: 3 }, e: { r: 1, c: 7 } },
     { s: { r: 3, c: 2 }, e: { r: 3, c: 3 } },
-    { s: { r: 3, c: 4 }, e: { r: 3, c: 9 } }
+    { s: { r: 3, c: 4 }, e: { r: 3, c: 7 } }
   ];
 
   ws['!rows'] = [
@@ -157,12 +178,9 @@ function createTimesheetWorksheet({ weekLabel, employeeName, rows }) {
     { wch: 12 },
     { wch: 18 },
     { wch: 14 },
-    { wch: 16 },
+    { wch: 18 },
     { wch: 13 },
-    { wch: 16 },
-    { wch: 17 },
-    { wch: 24 },
-    { wch: 24 }
+    { wch: 16 }
   ];
 
   const titleStyle = {
@@ -212,7 +230,7 @@ function createTimesheetWorksheet({ weekLabel, employeeName, rows }) {
   };
 
   applyStyle(ws, 'D2', titleStyle);
-  for (const cell of ['E2', 'F2', 'G2', 'H2', 'I2', 'J2']) applyStyle(ws, cell, titleStyle);
+  for (const cell of ['E2', 'F2', 'G2', 'H2', 'I2', 'J2', 'K2', 'L2']) applyStyle(ws, cell, titleStyle);
   applyStyle(ws, 'C4', labelStyle);
   applyStyle(ws, 'D4', labelStyle);
   applyStyle(ws, 'E4', valueStyle);
@@ -222,13 +240,13 @@ function createTimesheetWorksheet({ weekLabel, employeeName, rows }) {
   applyStyle(ws, 'I4', valueStyle);
   applyStyle(ws, 'J4', valueStyle);
 
-  ['C6', 'D6', 'E6', 'F6', 'G6', 'H6', 'I6', 'J6', 'K6', 'L6'].forEach((cell) => applyStyle(ws, cell, headerStyle));
+  ['C6', 'D6', 'E6', 'F6', 'G6', 'H6', 'I6', 'J6', 'K6', 'L6', 'M6', 'N6'].forEach((cell) => applyStyle(ws, cell, headerStyle));
 
   rows.forEach((_, index) => {
     const rowNumber = 7 + index;
     applyStyle(ws, `C${rowNumber}`, dateStyle);
     applyStyle(ws, `D${rowNumber}`, dayStyle);
-    ['E', 'F', 'G', 'H', 'I', 'J', 'K', 'L'].forEach((col) => applyStyle(ws, `${col}${rowNumber}`, dataStyle));
+    ['E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N'].forEach((col) => applyStyle(ws, `${col}${rowNumber}`, dataStyle));
   });
 
   return ws;
@@ -248,13 +266,9 @@ function createConsolidatedTimesheetWorksheet({ users }) {
       'Date',
       'Day',
       'Project',
-      'OnSite',
-      'Remote Support',
+      'Shift',
+      'Support Mode',
       'Total Hours',
-      'Day Shift Hours',
-      'Night Shift Hours',
-      'On Site timings',
-      'Remote Timings'
     ]
   ];
 
@@ -267,22 +281,18 @@ function createConsolidatedTimesheetWorksheet({ users }) {
         formatDateForCell(row.date),
         row.day,
         row.projectLabel || '-',
-        formatHoursAsLabel(row.onSiteHours),
-        formatHoursAsLabel(row.remoteSupportHours),
+        row.shiftModes || '-',
+        row.supportModes || '-',
         formatHoursAsLabel(row.workingHours),
-        formatHoursAsLabel(row.dayShiftHours),
-        formatHoursAsLabel(row.nightShiftHours),
-        row.onSiteTimings || '-',
-        row.remoteTimings || '-'
       ]);
     });
   });
 
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!merges'] = [
-    { s: { r: 1, c: 3 }, e: { r: 1, c: 10 } },
+    { s: { r: 1, c: 3 }, e: { r: 1, c: 7 } },
     { s: { r: 3, c: 2 }, e: { r: 3, c: 4 } },
-    { s: { r: 3, c: 5 }, e: { r: 3, c: 10 } }
+    { s: { r: 3, c: 5 }, e: { r: 3, c: 7 } }
   ];
   ws['!cols'] = [
     { wch: 2 },
@@ -290,6 +300,8 @@ function createConsolidatedTimesheetWorksheet({ users }) {
     { wch: 26 },
     { wch: 12 },
     { wch: 12 },
+    { wch: 18 },
+    { wch: 14 },
     { wch: 18 },
     { wch: 14 },
     { wch: 16 },
@@ -330,9 +342,9 @@ function createConsolidatedTimesheetWorksheet({ users }) {
     border: makeBorder('thin')
   });
 
-  ['C6', 'D6', 'E6', 'F6', 'G6', 'H6', 'I6', 'J6', 'K6', 'L6', 'M6', 'N6'].forEach((cell) => applyStyle(ws, cell, headerStyle));
+  ['C6', 'D6', 'E6', 'F6', 'G6', 'H6', 'I6', 'J6', 'K6', 'L6', 'M6', 'N6', 'O6', 'P6'].forEach((cell) => applyStyle(ws, cell, headerStyle));
   for (let rowNumber = 7; rowNumber <= aoa.length; rowNumber += 1) {
-    ['C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N'].forEach((col) => applyStyle(ws, `${col}${rowNumber}`, bodyStyle));
+    ['C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P'].forEach((col) => applyStyle(ws, `${col}${rowNumber}`, bodyStyle));
   }
 
   ws['!rows'] = [
@@ -356,6 +368,7 @@ export default function ReportsPage() {
   const [weeklySheets, setWeeklySheets] = useState([]);
   const [downloads, setDownloads] = useState([]);
   const [dbProjects, setDbProjects] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [selectedEmployeeId, setSelectedEmployeeId] = useState('all');
   const [selectedProject, setSelectedProject] = useState('all');
   const [allStaffExportFormat, setAllStaffExportFormat] = useState('excel');
@@ -367,6 +380,7 @@ export default function ReportsPage() {
 
   useEffect(() => {
     async function load() {
+      setLoading(true);
       const timelineQuery = profile?.role === 'admin'
         ? supabase.from('timeline_entries').select('*, profiles(name)')
         : supabase.from('timeline_entries').select('*, profiles(name)').eq('user_id', user.id);
@@ -406,6 +420,7 @@ export default function ReportsPage() {
       if (profile?.role !== 'admin') {
         setSelectedEmployeeId(user.id);
       }
+      setLoading(false);
     }
 
     load();
@@ -494,34 +509,14 @@ export default function ReportsPage() {
     // Combine timeline entries with weekly_timesheets entries for calculation
     const combinedTimeline = [...filteredTimeline];
     
-    // Add weekly_timesheets data as timeline entries
-    const DAY_KEYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
-    weeklySheets.forEach((sheet) => {
-      if (sheet.status !== 'approved') return;
-      if (selectedEmployeeId !== 'all' && sheet.user_id !== selectedEmployeeId) return;
-      if (!sheet.week_start || !Array.isArray(sheet.rows)) return;
-
-      DAY_KEYS.forEach((dayKey, idx) => {
-        const date = new Date(`${sheet.week_start}T00:00:00`);
-        date.setDate(date.getDate() + idx);
-        const dateKey = toInputDate(date);
-        
-        sheet.rows.forEach((row) => {
-          const hours = Number(row[dayKey] || 0);
-          if (hours > 0) {
-            combinedTimeline.push({
-              date: dateKey,
-              duration: hours,
-              project: row.project || 'Unassigned',
-              start_time: '00:00',
-              end_time: '00:00',
-              type: 'timesheet',
-              user_id: sheet.user_id
-            });
-          }
-        });
-      });
-    });
+    combinedTimeline.push(
+      ...expandApprovedWeeklySheetEntries(weeklySheets, {
+        startDate: rangeStart,
+        endDate: rangeEnd,
+        employeeId: selectedEmployeeId,
+        project: selectedProject
+      })
+    );
 
     return buildRangeSummary(combinedTimeline, filteredExpenses, rangeStart, rangeEnd);
   }, [filteredTimeline, filteredExpenses, weeklySheets, selectedEmployeeId, rangeStart, rangeEnd]);
@@ -587,6 +582,7 @@ export default function ReportsPage() {
         `Total Approved Expenses: ₹${rangeSummary.totalExpenses}`,
         'Daily Totals:',
         ...rangeSummary.dailyRows.map((row) => `  ${row.date} (${row.projectLabel || '-'}): ${row.workingHours}h, ₹${row.expenses}`),
+        ...rangeSummary.dailyRows.map((row) => `  ${row.date} | Shift: ${row.shiftModes || '-'} | Support: ${row.supportModes || '-'}`),
         'Category Totals:',
         ...rangeSummary.categoryRows.map((row) => `  ${row.category}: ₹${row.amount}`),
         `Monthly Hours: ${monthlyReport.totalHours}`,
@@ -694,7 +690,7 @@ export default function ReportsPage() {
             .filter((row) => row.workingHours > 0 || row.onSiteHours > 0 || row.remoteSupportHours > 0)
             .forEach((row) => {
               lines.push(
-                `${row.date} (${row.day}) | Project: ${row.projectLabel || '-'} | OnSite: ${row.onSiteHours}h | Remote: ${row.remoteSupportHours}h | Total: ${row.workingHours}h`
+                `${row.date} (${row.day}) | Project: ${row.projectLabel || '-'} | Shift: ${row.shiftModes || '-'} | Support: ${row.supportModes || '-'} | Total: ${row.workingHours}h`
               );
             });
         });
@@ -723,6 +719,8 @@ export default function ReportsPage() {
       toast.error(error.message);
     }
   };
+
+  if (loading) return <PageLoader message="Loading reports…" />;
 
   return (
     <div className="space-y-6">
@@ -802,19 +800,16 @@ export default function ReportsPage() {
 
       <div className="grid gap-6 lg:grid-cols-2">
         <div className="card overflow-x-auto p-4">
-          <h2 className="mb-3 font-semibold">Daily Hours and Approved Expenses</h2>
+          <h2 className="mb-3 font-semibold">Daily Timesheet Summary</h2>
           <table className="w-full min-w-[1100px] text-sm">
             <thead>
               <tr className="border-b border-[#dddddd] text-left dark:border-[#444]">
                 <th className="py-2">Date</th>
                 <th>Day</th>
                 <th>Project</th>
-                <th>OnSite</th>
-                <th>Remote Support</th>
+                <th>Shift</th>
+                <th>Support Mode</th>
                 <th>Total Hours</th>
-                <th>Day Shift</th>
-                <th>Night Shift</th>
-                <th>Expenses</th>
               </tr>
             </thead>
             <tbody>
@@ -823,17 +818,14 @@ export default function ReportsPage() {
                   <td className="py-2">{row.date}</td>
                   <td>{row.day}</td>
                   <td>{row.projectLabel || '-'}</td>
-                  <td>{row.onSiteHours}h</td>
-                  <td>{row.remoteSupportHours}h</td>
+                  <td>{row.shiftModes || '-'}</td>
+                  <td>{row.supportModes || '-'}</td>
                   <td>{row.workingHours}h</td>
-                  <td>{row.dayShiftHours}h</td>
-                  <td>{row.nightShiftHours}h</td>
-                  <td>₹{row.expenses}</td>
                 </tr>
               ))}
               {!rangeSummary.dailyRows.length ? (
                 <tr>
-                  <td className="py-3 text-slate-500" colSpan={9}>No records for the selected date range.</td>
+                  <td className="py-3 text-slate-500" colSpan={6}>No records for the selected date range.</td>
                 </tr>
               ) : null}
             </tbody>

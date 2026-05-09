@@ -134,11 +134,11 @@ function isNonEmpty(value) {
 }
 
 function validateAadhaar(value) {
-  return /^\d{4}\s\d{4}\s\d{4}\s\d{4}$/.test(String(value || '').trim());
+  return /^\d{4}\s\d{4}\s\d{4}$/.test(String(value || '').trim());
 }
 
 function formatAadhaarInput(value) {
-  const digitsOnly = String(value || '').replace(/\D/g, '').slice(0, 16);
+  const digitsOnly = String(value || '').replace(/\D/g, '').slice(0, 12);
   const chunks = digitsOnly.match(/.{1,4}/g) || [];
   return chunks.join(' ');
 }
@@ -309,7 +309,12 @@ function splitPayload(form) {
 
   const hrManagedData = {};
   HR_MANAGED_FIELDS.forEach((key) => {
-    hrManagedData[key] = form[key] ?? '';
+    // Only include HR fields if they have a non-empty value
+    // This prevents sending empty HR data for employee users
+    const value = form[key];
+    if (value !== undefined && value !== null && value !== '') {
+      hrManagedData[key] = value;
+    }
     delete employeeEditableData[key];
   });
 
@@ -834,14 +839,17 @@ export default function OnboardingPage() {
         <section className="card p-5">
           <h2 className="mb-4 text-lg font-semibold">2. Identity (KYC) Details</h2>
           <div className="grid gap-3 md:grid-cols-2">
-            <input
-              className={inputClass()}
-              placeholder="Aadhaar Number *"
-              value={form.aadhaar_number}
-              onChange={(e) => setValue('aadhaar_number', formatAadhaarInput(e.target.value))}
-              maxLength={19}
-              inputMode="numeric"
-            />
+              <div>
+                <input
+                  className={inputClass()}
+                  placeholder="Aadhaar Number *"
+                  value={form.aadhaar_number}
+                  onChange={(e) => setValue('aadhaar_number', formatAadhaarInput(e.target.value))}
+                  maxLength={14}
+                  inputMode="numeric"
+                />
+                  <p className="mt-1 text-[11px] text-slate-400">Format: #### #### #### (12 digits, auto-formatted with spaces)</p>
+              </div>
             <div>
               <input
                 className={inputClass()}

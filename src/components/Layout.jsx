@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { useNotifications } from '../context/NotificationContext';
 import { useTheme } from '../context/ThemeContext';
 
 const NAV_ITEMS_BASE = [
@@ -16,6 +15,10 @@ const NAV_ITEMS_BASE = [
   {
     to: '/expenses', label: 'Expenses',
     icon: <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z" /></svg>
+  },
+  {
+    to: '/material-tracking', label: 'Material Tracking',
+    icon: <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
   },
   {
     to: '/onboarding', label: 'Employee DB',
@@ -41,35 +44,24 @@ const PROJECT_MASTER_ITEM = {
   icon: <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" /></svg>
 };
 
+const MATERIAL_TRACKING_ADMIN_ITEM = {
+  to: '/admin/material-tracking', label: 'Material Tracking',
+  icon: <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" /></svg>
+};
+
 export default function Layout({ children }) {
   const { profile, signOut } = useAuth();
   const { dark, toggle } = useTheme();
-  const { total: pendingTotal, pendingCounts } = useNotifications();
   const navigate = useNavigate();
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [bellOpen, setBellOpen] = useState(false);
-
-  useEffect(() => {
-    if (!bellOpen) return;
-
-    const handleKeyDown = (event) => {
-      if (event.key === 'Escape') {
-        setBellOpen(false);
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [bellOpen]);
-
-  const goToAdminSection = (section) => {
-    setBellOpen(false);
-    navigate(`/admin?tab=${section}`);
-  };
 
   const initials = profile?.name
     ? profile.name.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()
     : '?';
+
+  const visibleNavItems = profile?.role === 'admin'
+    ? NAV_ITEMS_BASE.filter((item) => item.to !== '/material-tracking')
+    : NAV_ITEMS_BASE;
 
   const Sidebar = ({ mobile = false }) => (
     <div className={`flex h-full flex-col ${mobile ? '' : ''}`}>
@@ -88,7 +80,7 @@ export default function Layout({ children }) {
 
       {/* Nav */}
       <nav className="flex-1 space-y-0.5 px-3 pb-4">
-        {NAV_ITEMS_BASE.map((item) => (
+        {visibleNavItems.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
@@ -151,6 +143,26 @@ export default function Layout({ children }) {
                     {PROJECT_MASTER_ITEM.icon}
                   </span>
                   <span>{PROJECT_MASTER_ITEM.label}</span>
+                </>
+              )}
+            </NavLink>
+            <NavLink
+              to={MATERIAL_TRACKING_ADMIN_ITEM.to}
+              onClick={() => mobile && setMobileOpen(false)}
+              className={({ isActive }) =>
+                `group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-all duration-150 ${
+                  isActive
+                    ? 'nav-active'
+                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-700/60 dark:hover:text-white'
+                }`
+              }
+            >
+              {({ isActive }) => (
+                <>
+                  <span className={`shrink-0 transition-transform duration-150 ${isActive ? '' : 'group-hover:scale-110'}`}>
+                    {MATERIAL_TRACKING_ADMIN_ITEM.icon}
+                  </span>
+                  <span>{MATERIAL_TRACKING_ADMIN_ITEM.label}</span>
                 </>
               )}
             </NavLink>
@@ -225,56 +237,6 @@ export default function Layout({ children }) {
           </div>
 
           <div className="flex items-center gap-2">
-            {/* Notification bell — admin only */}
-            {profile?.role === 'admin' && (
-              <div className="relative">
-                <button
-                  onClick={() => setBellOpen((x) => !x)}
-                  className="relative flex h-8 w-8 items-center justify-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-700 dark:hover:text-slate-200"
-                  title="Pending approvals"
-                >
-                  <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-                  </svg>
-                  {pendingTotal > 0 && (
-                    <span className="absolute -right-1 -top-1 flex h-4 w-4 items-center justify-center rounded-full bg-red-500 text-[9px] font-bold text-white">
-                      {pendingTotal > 99 ? '99+' : pendingTotal}
-                    </span>
-                  )}
-                </button>
-                {bellOpen && (
-                  <div className="absolute right-0 top-10 z-50 w-64 rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-800">
-                    <div className="border-b border-slate-100 px-4 py-2.5 dark:border-slate-700">
-                      <p className="text-xs font-bold uppercase tracking-wider text-slate-500">Pending Approvals</p>
-                    </div>
-                    <div className="divide-y divide-slate-50 dark:divide-slate-700">
-                      {[
-                        { label: 'Expenses', count: pendingCounts.expenses, color: 'bg-amber-500', section: 'expenses' },
-                        { label: 'Leave Requests', count: pendingCounts.leaves, color: 'bg-violet-500', section: 'leave' },
-                        { label: 'Timesheets', count: pendingCounts.timesheets, color: 'bg-sky-500', section: 'timesheet' },
-                      ].map((item) => (
-                        <div key={item.label} className="flex items-center justify-between px-4 py-2.5">
-                          <button type="button" onClick={() => goToAdminSection(item.section)} className="text-left text-sm text-slate-600 transition hover:text-teal dark:text-slate-300 dark:hover:text-teal">
-                            {item.label}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => goToAdminSection(item.section)}
-                            className={`flex h-5 min-w-[20px] items-center justify-center rounded-full px-1.5 text-[11px] font-bold text-white transition hover:scale-105 ${item.count > 0 ? item.color : 'bg-slate-300 dark:bg-slate-600'}`}
-                            aria-label={`Open ${item.label}`}
-                          >
-                            {item.count}
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="border-t border-slate-100 px-4 py-2 dark:border-slate-700">
-                      <button onClick={() => { setBellOpen(false); navigate('/admin'); }} className="text-xs font-semibold text-teal hover:underline">Go to Admin Hub →</button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
             {/* Dark mode toggle */}
             <button
               onClick={toggle}

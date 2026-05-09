@@ -14,7 +14,9 @@ function getOAuthRedirectTo() {
   return 'http://localhost:5173';
 }
 
-function resolveRole(email) {
+// Role is always sourced from the DB (profiles table, enforced by RLS).
+// VITE_ADMIN_EMAILS is only used as a fallback when creating a brand-new profile.
+function resolveRoleForNewProfile(email) {
   const configured = (import.meta.env.VITE_ADMIN_EMAILS || '')
     .split(',')
     .map((x) => x.trim().toLowerCase())
@@ -35,11 +37,13 @@ export function AuthProvider({ children }) {
       .single();
 
     if (!error && data) {
+      // Role comes from DB — never override from env
       setProfile(data);
       return data;
     }
 
-    const fallbackRole = resolveRole(user.email);
+    // First-time login: create profile with role from DB function / env fallback
+    const fallbackRole = resolveRoleForNewProfile(user.email);
     const { data: inserted, error: insertError } = await supabase
       .from('profiles')
       .upsert(
